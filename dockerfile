@@ -11,6 +11,11 @@ RUN pip install seaborn
 #Install nano
 RUN apt-get update && apt-get install -y nano
 
-# Copy the dependencies file to the working directory
-COPY datasets . 
-COPY . .
+# Copy Python code first (smaller files)
+COPY hippie ./hippie
+COPY *.py ./
+COPY *.sh ./
+COPY *.yaml ./
+
+# Copy datasets separately (larger files)
+COPY datasets_hippie ./datasets_hippie

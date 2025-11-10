@@ -1,0 +1,75 @@
+# Checkpoint files
+*.ckpt
+*.pt
+*.pth
+checkpoints/
+lightning_logs/
+hippie_env/
+
+# Model artifacts
+*.pkl
+*.joblib
+*.model
+
+# Data files
+#*.csv
+*.h5
+*.hdf5
+*.npy
+*.npz
+
+# Jupyter notebooks
+*.ipynb
+.ipynb_checkpoints/
+
+# Python cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+.Python
+*.so
+
+# Virtual environments
+venv/
+env/
+ENV/
+.venv/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Git
+.git/
+.gitignore
+
+# Wandb
+wandb/
+
+# Temporary files
+*.tmp
+*.temp
+*.log
+
+# Documentation
+README.md
+*.md
+docs/
+
+# Build artifacts
+build/
+dist/
+*.egg-info/

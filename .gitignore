@@ -1,16 +1,21 @@
-#Project files
-scripts/train_model_api.py
-hippie/hippie_api.py
-/checkpoints/*
-
+*.tar
+*.npz
+*.zip
+data/cortical_labs/mnt/
+cross_dataset_prediction_with_wandb.sh
+CLAUDE.md
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
-
+data/allen_scope_neuropixel/*.csv
 # C extensions
 *.so
-
+.DS_Store
+/DS_Store
+*.pkl
+*.json
+*.nwb
 # Distribution / packaging
 .Python
 build/
@@ -30,7 +35,7 @@ share/python-wheels/
 .installed.cfg
 *.egg
 MANIFEST
-.DS_Store
+
 # PyInstaller
 #  Usually these files are written by a python script from a template
 #  before PyInstaller builds the exe, so as to inject date/other infos into it.
@@ -172,7 +177,25 @@ cython_debug/
 #  option (not recommended) you can uncomment the following to ignore the entire idea folder.
 #.idea/
 
+# Ruff stuff:
+.ruff_cache/
+
 # PyPI configuration file
 .pypirc
 
-wandb/*
+# wandb stuff
+wandb/
+*/*log
+*/__pycache__/
+# Note: Excluding HIPPIE (all caps) but NOT hippie (lowercase, which is our source code)
+# This pattern won't work on case-insensitive filesystems, so commenting it out
+# HIPPIE/*
+*.csv
+*.h5
+*.pkl
+*.ckpt
+hippie_venv/
+datasets_hippie/allen_scope_neuropixel_area/
+datasets_hippie/hull_cell_type_old/
+lightning_logs/
+wandbcreds

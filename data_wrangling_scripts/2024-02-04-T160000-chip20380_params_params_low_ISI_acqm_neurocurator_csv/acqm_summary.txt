@@ -1,0 +1,26 @@
+ACQM Data Processing Summary - NeuroCAT
+======================================================================
+
+Source File:
+  ACQM File: ./data_acqm/2024-02-04-T160000-chip20380_params_params_low_ISI_acqm.zip
+
+Data Summary:
+  Number of Units: 133
+  Sampling Rate: 20000.0 Hz
+  Waveform Points: 50
+  ISI Bins: 100
+  ACG Bins: 201
+
+Generated Files (NeuroCAT format):
+  - waveforms.csv: Mean waveforms (50 time points per unit)
+  - metadata.csv: Comprehensive unit metadata with computed features
+  - isi_dist.csv: Interspike interval distributions (100ms bins)
+  - acg.csv: Autocorrelograms (200ms window)
+  - spike_times/: Individual spike time CSV files per unit
+
+NeuroCAT Features Computed:
+  - Waveform features (peak, trough, FWHM)
+  - Firing rates
+  - Minimum ISI
+  - ISI distributions
+  - Autocorrelograms
