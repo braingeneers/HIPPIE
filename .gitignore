@@ -9,6 +9,10 @@ __pycache__/
 *.py[cod]
 *$py.class
 data/allen_scope_neuropixel/*.csv
+data_wrangling_scripts/*.csv
+data_wrangling_scripts/2024-02-04-T160000-chip20380_params_params_low_ISI_acqm_neurocurator_csv/*.csv
+data_wrangling_scripts/allen_cache/*.csv
+outputs/
 # C extensions
 *.so
 .DS_Store
@@ -190,7 +194,6 @@ wandb/
 # Note: Excluding HIPPIE (all caps) but NOT hippie (lowercase, which is our source code)
 # This pattern won't work on case-insensitive filesystems, so commenting it out
 # HIPPIE/*
-*.csv
 *.h5
 *.pkl
 *.ckpt
