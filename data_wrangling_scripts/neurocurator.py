@@ -5,7 +5,7 @@ import matplotlib.pyplot as plt
 import zipfile
 
 from scipy import interpolate, signal
-import torch
+#import torch
 
 from joblib import Parallel, delayed
 
@@ -251,64 +251,65 @@ class Neurocurator:
             - Column names are the bin centers in milliseconds
             - Values are the counts (or normalized counts) in each bin
         """
-        # Set up the window parameters
-        ccg_win = [-window_size_ms, window_size_ms]
+        # Calculate bin edges and centers
+        bin_edges = np.arange(-window_size_ms, window_size_ms + bin_size_ms, bin_size_ms)
+        bin_centers = bin_edges[:-1] + bin_size_ms / 2
+        n_bins = len(bin_centers)
 
-        # Create sparse binary trains for each spike train
-        max_time = 0
-        for train in spike_trains:
-            if len(train) > 0:
-                max_time = max(max_time, max(train))
+        def compute_single_acg(train):
+            """Compute autocorrelogram for a single spike train efficiently."""
+            # Convert to numpy array, flatten, and sort
+            train = np.sort(np.asarray(train, dtype=np.float64).flatten())
 
-        # Add a buffer to ensure we capture all relationships
-        max_time += window_size_ms * 2
+            # Skip if too few spikes
+            if len(train) < 2:
+                return np.zeros(n_bins)
 
-        # Bin size in time units
-        bin_size = bin_size_ms
+            n_spikes = len(train)
+            differences = []
 
-        # Calculate number of bins
-        n_bins = int(np.ceil(max_time / bin_size)) + 1
+            # For each spike, find all spikes within the window using binary search
+            for i in range(n_spikes):
+                # Use searchsorted to efficiently find spikes within window
+                # This is O(log n) instead of linear search
+                upper_bound = train[i] + window_size_ms
+                j_max = np.searchsorted(train, upper_bound, side='right')
 
-        # Create binary spike trains (sparse arrays)
-        sparse_trains = []
-        for train in spike_trains:
-            sparse_train = np.zeros(n_bins, dtype=int)
-            if len(train) > 0:
-                # Convert spike times to bin indices
-                bin_indices = (np.array(train) / bin_size).astype(int)
-                # Ensure indices are within bounds
-                valid_indices = bin_indices[bin_indices < n_bins]
-                sparse_train[valid_indices] = 1
-            sparse_trains.append(sparse_train)
+                # Compute differences to spikes in range [i+1, j_max)
+                if j_max > i + 1:
+                    diffs = train[i+1:j_max] - train[i]
+                    differences.extend(diffs)
+                    differences.extend(-diffs)  # Add symmetric negative lags
 
-        # Calculate lags array
-        lags = np.arange(ccg_win[0], ccg_win[1] + bin_size, bin_size)
-        n_lags = len(lags)
+            # Convert to numpy array
+            differences = np.array(differences) if differences else np.array([])
 
-        # Initialize results storage
-        all_acgs = np.zeros((len(spike_trains), n_lags))
+            # Remove central bin (lag=0) if requested
+            if remove_central_bin and len(differences) > 0:
+                differences = differences[np.abs(differences) > 1e-10]
 
-        # For each spike train, calculate its autocorrelogram
-        for i, sparse_train in enumerate(sparse_trains):
-            # Use the ccg function to calculate the ACG
-            counts, _ = self.compute_cross_correlation(
-                sparse_train, sparse_train, ccg_win=ccg_win, bin_size=bin_size
-            )
-
-            # Find and remove the central bin if requested
-            if remove_central_bin:
-                central_idx = np.where(lags == 0)[0]
-                if len(central_idx) > 0:
-                    counts[central_idx[0]] = 0
+            # Create histogram
+            if len(differences) > 0:
+                counts, _ = np.histogram(differences, bins=bin_edges)
+            else:
+                counts = np.zeros(n_bins)
 
             # Normalize if requested
-            if normalize and np.sum(sparse_train) > 0:
-                counts = counts / np.sum(sparse_train)
+            if normalize and n_spikes > 0:
+                counts = counts.astype(np.float64) / n_spikes
 
-            all_acgs[i] = counts
+            return counts
 
-        # Create the DataFrame
-        column_names = [f"{x:.2f}" for x in lags]
+        # Use parallel processing for better performance across spike trains
+        all_acgs = Parallel(n_jobs=-1)(
+            delayed(compute_single_acg)(train) for train in spike_trains
+        )
+
+        # Convert to numpy array then DataFrame
+        all_acgs = np.array(all_acgs)
+
+        # Create the DataFrame with appropriate column names
+        column_names = [f"{x:.2f}" for x in bin_centers]
         result_df = pd.DataFrame(all_acgs, columns=column_names)
 
         return result_df
