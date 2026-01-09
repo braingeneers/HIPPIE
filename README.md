@@ -351,12 +351,11 @@ make go  # Builds, tags, and pushes in one command
 If you use HIPPIE in your research, please cite:
 
 ```bibtex
-@software{hippie2025,
-  title = {HIPPIE: HD-MEA Integration Pipeline for Phenotypic Inference and Electrophysiology},
-  author = {Gonzalez Ferrer, Jesus and Lehrer, Julian},
-  year = {2025},
-  url = {https://github.com/braingeneers/HIPPIE},
-  license = {BSD-3-Clause}
+@article{gonzalez2025hippie,
+  title={HIPPIE: A Multimodal Deep Learning Model for Electrophysiological Classification of Neurons},
+  author={Gonzalez-Ferrer, Jesus and Lehrer, Julian and Schweiger, Hunter E and Geng, Jinghui and Hernandez, Sebastian and Reyes, Francisco and Sevetson, Jess L and Salama, Sofie R and Teodorescu, Mircea and Haussler, David and others},
+  journal={bioRxiv},
+  year={2025}
 }
 ```
 
