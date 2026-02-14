@@ -35,8 +35,20 @@ The framework uses a trimodal CVAE architecture with configurable ablation studi
 - CUDA-compatible GPU (optional, but recommended)
 - Docker (optional, for containerized deployment)
 
-### Local Installation
+### System Requirements                                                                                                
+                                                                                                                        
+**Tested Operating Systems:**                                                                                          
+- macOS 14.x (Sonoma)                                                                                                  
+- Ubuntu 22.04 LTS                                                                                                     
+                                                                                                                        
+**Tested Dependency Versions:**                                                                                        
+- Python 3.9.x, 3.10.x, 3.11.x                                                                                         
+- PyTorch 2.1.0                                                                                                        
+- pytorch-lightning 2.1.0                                                                                              
+- CUDA 11.8 / 12.1 (for GPU support)  
 
+### Local Installation
+Installation time takes 2 to 3 minutes in a laptop. 
 ```bash
 # Clone the repository
 git clone https://github.com/braingeneers/HIPPIE.git
@@ -49,8 +61,6 @@ source hippie_venv/bin/activate  # On Windows: hippie_venv\Scripts\activate
 # Install package
 pip install -e .
 
-# Install development dependencies (optional)
-pip install -e ".[dev]"
 ```
 
 ### Docker Installation
@@ -65,6 +75,7 @@ make run
 # Push to Docker Hub (requires login)
 make push
 ```
+
 
 ## Dataset Structure
 
@@ -83,14 +94,13 @@ datasets_hippie/
 
 | Dataset | Description | Cell Types | Samples |
 |---------|-------------|------------|---------|
-| `allen_scope_neuropixel_area` | Allen Institute Neuropixel recordings | Brain regions | ~5000+ |
-| `cellexplorer_cell_type` | CellExplorer cortical interneurons | PV, SST, VIP, Pyramidal | 72 |
+| `allen_scope_neuropixel_area` | Allen Institute Neuropixel recordings | Brain regions | 82000+ |
+| `cellexplorer_cell_type` | CellExplorer cortical interneurons | PV, SST, VIP, Pyramidal | 431 |
 | `hausser_cell_type` | Häusser lab cerebellar recordings | PkC, GoC, MLI, MFB | ~4000 |
 | `hull_cell_type` | Hull lab cerebellar recordings | PkC, GoC, MLI, MFB | 206 |
 | `lissberger_labeled_cell_type` | Lisberger lab cerebellar data | PkC_ss, PkC_cs, GoC, MLI, MFB | 1152 |
-| `mouse_organoids_cell_line` | Mouse organoid electrophysiology | Dorsal, Ventral | ~1000 |
-| `braingeneers_manual_curation` | Manually curated units | Single Unit, Multiunit, Noise | Variable |
-| `juxtacellular_mouse_s1_area` | Juxtacellular S1 recordings | Brain regions | Variable |
+| `mouse_organoids_cell_line` | Mouse organoid electrophysiology | Dorsal, Ventral | 4746 |
+| `juxtacellular_mouse_s1_area` | Juxtacellular S1 recordings | Brain regions | 225 |
 
 ## Model Configurations
 
@@ -115,7 +125,7 @@ HIPPIE provides 10 predefined configurations for systematic ablation studies:
 
 ### Cross-Dataset Training and Prediction
 
-The main workflow uses the cross-dataset training pipeline:
+The main workflow uses the cross-dataset training pipeline and it takes around 30 Minutes:
 
 ```bash
 # Using the Python script
@@ -145,6 +155,11 @@ The notebook provides a step-by-step walkthrough of:
 2. **Fine-tuning**: Adaptation to target dataset without labels
 3. **Supervised Training**: Training with labels using balanced sampling
 4. **Evaluation**: K-NN and MLP classifier evaluation with confusion matrices
+
+**Expected Output:**                                                                                                   
+- Training logs printed to console                                                                                     
+- Weights & Biases dashboard with loss curves and confusion matrices                                                   
+- Final accuracy metrics and csv outputs with embeddings and cluster labels.
 
 ### Key Parameters
 

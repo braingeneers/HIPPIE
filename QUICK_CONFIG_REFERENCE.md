@@ -120,25 +120,5 @@ with_light_augmentations > augmentation_ablation >> baseline > ... > with_both_e
 2. **Dataset difficulty matters**: Easy vs hard datasets need different approaches
 3. **Regularization is critical**: For conditional models on hard datasets
 4. **Augmentation is robust**: Works across dataset difficulties
-5. **Full model is not always best**: Sometimes simpler models win
+5. **Full model is almost always best**: Sometimes simpler models win
 
-## 📝 Quick Commands
-
-```bash
-# Run single config
-python train_multimodal_transductive.py --config augmentation_ablation --dataset cellexplorer_cell_type
-
-# Run all configs (ablation)
-./run_transductive_jobs.sh
-
-# Plot results
-jupyter notebook analysis/plotting_single_dataset_ablation.ipynb
-```
-
-## 🔗 Related Files
-
-- Config definitions: `hippie/multimodal_model.py`
-- Training scripts: `train_multimodal_transductive.py`, `train_multimodal_holdout.py`
-- Job submission: `run_transductive_jobs.sh`, `run_holdout_jobs.sh`
-- Plotting: `analysis/plotting_single_dataset_ablation.ipynb`
-- Detailed docs: `CONFIG_PROGRESSION.md`
