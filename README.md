@@ -116,8 +116,9 @@ HIPPIE provides 10 predefined configurations for systematic ablation studies:
 | `with_heavy_augmentations` | ✅ | ✅ | ❌ | ❌ | Heavy | ❌ |
 | `with_batch_norm` | ✅ | ✅ | ✅ | ✅ | Light | ❌ |
 | `no_fusion` | ✅ | ✅ | ❌ | ❌ | None | ❌ |
-| `full_model` | ✅ | ✅ | ✅ | ✅ | None | ❌ |
-| `augmentation_ablation` | ✅ | ✅ | ✅ | ✅ | Light | ✅ |
+| `no_augmentations` | ✅ | ✅ | ✅ | ✅ | None | ❌ |
+| `full_architecture` | ✅ | ✅ | ✅ | ✅ | Light | ✅ |
+| `class_decoder_source_bn_aug_reg` | ✅ | decoder-only | ✅ | ✅ | Light | ✅ |
 
 **See [QUICK_CONFIG_REFERENCE.md](QUICK_CONFIG_REFERENCE.md) for detailed configuration parameters.**
 
@@ -132,7 +133,7 @@ The main workflow uses the cross-dataset training pipeline and it takes around 3
 python cross_dataset_script.py \
   --training-dataset hausser_cell_type \
   --predict-dataset lissberger_labeled_cell_type \
-  --config augmentation_ablation \
+  --config class_decoder_source_bn_aug_reg \
   --z-dim 20 \
   --beta 0.9 \
   --pretrain-max-epochs 100 \

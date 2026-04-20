@@ -5,16 +5,21 @@
 ### The Progression (Simplest → Most Complex)
 
 ```
-1. baseline              → Pure VAE
-2. with_source          → + Dataset ID
-3. with_class           → + Cell type
-4. with_both_embeddings → + Both embeddings
-5. with_light_augmentations → Baseline + Light data augmentation
-6. with_heavy_augmentations → Embeddings + Heavy augmentation
-7. with_batch_norm      → + Batch normalization + Light aug
-8. no_fusion            → Variant: embeddings without fusion
-9. full_model           → Everything EXCEPT regularization
-10. augmentation_ablation → 🏆 MOST COMPLEX: Everything + regularization
+1.  baseline                          → Pure VAE
+2.  with_source                       → + Dataset ID
+3.  with_class                        → + Cell type
+4.  with_both_embeddings              → + Both embeddings
+5.  with_light_augmentations          → Baseline + Light data augmentation
+6.  with_heavy_augmentations          → Embeddings + Heavy augmentation
+7.  with_batch_norm                   → + Batch normalization + Light aug
+8.  no_fusion                         → Variant: embeddings without fusion
+9.  no_augmentations                  → Full arch, no aug/reg
+10. full_architecture                  → Full arch + Light aug + regularization
+11. conditional_decoder_only          → Decoder-only class conditioning + light aug
+12. class_decoder_source              → Decoder-only class, no BN/aug/reg
+13. class_decoder_source_bn           → + Batch normalization
+14. class_decoder_source_bn_strong_aug → + Strong augmentations
+15. class_decoder_source_bn_aug_reg   → 🏆 PRODUCTION DEFAULT: decoder-only + BN + light aug + reg
 ```
 
 ## 📊 What Each Config Has
@@ -29,8 +34,13 @@
 | 6 | `with_heavy_augmentations` | Embeddings + heavy aug | Aggressive augmentation |
 | 7 | `with_batch_norm` | Full arch + BatchNorm + light aug | Add normalization |
 | 8 | `no_fusion` | Embeddings, no fusion | Test fusion importance |
-| 9 | `full_model` | Everything except reg | Full architecture |
-| 10 | `augmentation_ablation` | Everything | Kitchen sink |
+| 9 | `no_augmentations` | Full arch, no aug/reg | Full architecture |
+| 10 | `full_architecture` | Full arch + light aug + reg | Kitchen sink (encoder sees class) |
+| 11 | `conditional_decoder_only` | Decoder-only class + light aug | Asymmetric CVAE variant |
+| 12 | `class_decoder_source` | Decoder-only class, no BN/aug | Ladder rung 4 |
+| 13 | `class_decoder_source_bn` | + Batch normalization | Ladder rung 5 |
+| 14 | `class_decoder_source_bn_strong_aug` | + Strong augmentations | Ladder rung 7 |
+| 15 | `class_decoder_source_bn_aug_reg` | + Light aug + regularization | 🏆 Production default (rung 8) |
 
 ## 🔧 Component Legend
 
@@ -62,37 +72,39 @@ with_batch_norm:         [VAE] + 🔵 + 🟢 + 🟡 + 🟣 + 🔶(light)
 
 no_fusion:               [VAE] + 🔵 + 🟢
 
-full_model:              [VAE] + 🔵 + 🟢 + 🟡 + 🟣
+no_augmentations:        [VAE] + 🔵 + 🟢 + 🟡 + 🟣
 
-augmentation_ablation:   [VAE] + 🔵 + 🟢 + 🟡 + 🟣 + 🔶(light) + 🔴
+full_architecture:       [VAE] + 🔵 + 🟢 + 🟡 + 🟣 + 🔶(light) + 🔴
+
+class_decoder_source_bn_aug_reg: [VAE] + 🔵 + 🟢(decoder) + 🟡 + 🟣 + 🔶(light) + 🔴
 ```
 
 ## 🎯 When to Use Which Config
 
 ### For Easy Datasets (naturally separable):
-✅ **Use**: `full_model` or `augmentation_ablation`
+✅ **Use**: `no_augmentations` or `class_decoder_source_bn_aug_reg`
 ❌ **Avoid**: Over-complicating with augmentation
 
 ### For Hard Datasets (overlapping/imbalanced):
-✅ **Use**: `with_light_augmentations` or `augmentation_ablation`
+✅ **Use**: `with_light_augmentations` or `class_decoder_source_bn_aug_reg`
 ❌ **Avoid**: `with_class`, `with_both_embeddings`, `no_fusion` without regularization
 
 ### For Ablation Studies:
-Run all 10 configs to show progression
+Run the full ladder to show progression
 
 ### For Production:
-Use `augmentation_ablation` (most robust)
+Use `class_decoder_source_bn_aug_reg` (post-rebuttal production default, +0.17 over prior default)
 
 ## 📈 Expected Performance Order
 
 ### Easy Dataset (lissberger):
 ```
-with_both_embeddings ≈ full_model ≈ augmentation_ablation > with_batch_norm > baseline
+with_both_embeddings ≈ no_augmentations ≈ class_decoder_source_bn_aug_reg > with_batch_norm > baseline
 ```
 
 ### Hard Dataset (cellexplorer):
 ```
-with_light_augmentations > augmentation_ablation >> baseline > ... > with_both_embeddings > no_fusion
+with_light_augmentations > class_decoder_source_bn_aug_reg >> baseline > ... > with_both_embeddings > no_fusion
 ```
 
 ## 🚨 Known Issues
@@ -102,23 +114,19 @@ with_light_augmentations > augmentation_ablation >> baseline > ... > with_both_e
 - ❌ `with_both_embeddings`: ~30%
 - ❌ `no_fusion`: ~15%
 
-**Solution**: Use `augmentation_ablation` which adds regularization
+**Solution**: Use `class_decoder_source_bn_aug_reg` — the encoder never sees the class label (no train/test mismatch), and decoder-side regularization further stabilizes training.
 
 ### Why This Happens:
 1. Model trains WITH class labels
 2. Model tested WITHOUT class labels (masked to prevent leakage)
 3. Train/test mismatch → performance collapse
 
-**Regularization fixes this** by:
-- Dropout (30%) on class embeddings during training
-- Consistency loss (0.15 weight) ensures similar outputs with/without labels
-- Warmup schedule (5 epochs) for gradual enforcement
+**The asymmetric CVAE fix**: `encoder_uses_class_embedding=False` — the encoder is class-agnostic by construction, so there is no drift at test time regardless of masking.
 
 ## 🎓 Key Takeaways
 
 1. **Progression matters**: Start simple (baseline), add complexity gradually
 2. **Dataset difficulty matters**: Easy vs hard datasets need different approaches
-3. **Regularization is critical**: For conditional models on hard datasets
+3. **Decoder-only conditioning is superior**: Moving class embedding to decoder-only eliminates train/test mismatch
 4. **Augmentation is robust**: Works across dataset difficulties
-5. **Full model is almost always best**: Sometimes simpler models win
-
+5. **Production default is `class_decoder_source_bn_aug_reg`**: +0.17 mean accuracy over prior default

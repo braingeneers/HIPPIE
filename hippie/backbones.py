@@ -71,17 +71,25 @@ class BasicBlockDec(nn.Module):
 
 
 class ResNet18Enc(nn.Module):
-    def __init__(self, num_blocks=[2, 2, 2, 2], z_dim=10, nc=1):
+    def __init__(self, num_blocks=[2, 2, 2, 2], z_dim=10, nc=1, base_width=64):
+        """ResNet-18 encoder.
+
+        Args:
+            base_width: Base channel width for layer1 (default 64, matching
+                vanilla ResNet-18). Channels scale as [bw, 2bw, 4bw, 8bw].
+                Use 32 for a ~0.25× parameter model, 128 for ~4× parameters.
+        """
         super().__init__()
-        self.in_planes = 64
+        bw = base_width
+        self.in_planes = bw
         self.z_dim = z_dim
-        self.conv1 = nn.Conv1d(nc, 64, kernel_size=3, stride=2, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm1d(64)
-        self.layer1 = self._make_layer(BasicBlockEnc, 64, num_blocks[0], stride=1)
-        self.layer2 = self._make_layer(BasicBlockEnc, 128, num_blocks[1], stride=2)
-        self.layer3 = self._make_layer(BasicBlockEnc, 256, num_blocks[2], stride=2)
-        self.layer4 = self._make_layer(BasicBlockEnc, 512, num_blocks[3], stride=2)
-        self.linear = nn.Linear(512, 2 * z_dim)
+        self.conv1 = nn.Conv1d(nc, bw, kernel_size=3, stride=2, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm1d(bw)
+        self.layer1 = self._make_layer(BasicBlockEnc, bw,      num_blocks[0], stride=1)
+        self.layer2 = self._make_layer(BasicBlockEnc, bw * 2,  num_blocks[1], stride=2)
+        self.layer3 = self._make_layer(BasicBlockEnc, bw * 4,  num_blocks[2], stride=2)
+        self.layer4 = self._make_layer(BasicBlockEnc, bw * 8,  num_blocks[3], stride=2)
+        self.linear = nn.Linear(bw * 8, 2 * z_dim)
 
     def _make_layer(self, BasicBlockEnc, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -104,18 +112,24 @@ class ResNet18Enc(nn.Module):
 
 
 class ResNet18Dec(nn.Module):
-    def __init__(self, output_size: int = 64, num_blocks=[2, 2, 2, 2], z_dim=10, nc=1):
+    def __init__(self, output_size: int = 64, num_blocks=[2, 2, 2, 2], z_dim=10, nc=1, base_width=64):
+        """ResNet-18 decoder.  Must match the encoder's base_width."""
         super().__init__()
-        self.in_planes = 512
+        bw = base_width
+        self.in_planes = bw * 8
 
-        self.linear = nn.Linear(2 * z_dim, 512)
+        self.linear = nn.Linear(2 * z_dim, bw * 8)
 
-        self.layer4 = self._make_layer(BasicBlockDec, 256, num_blocks[3], stride=2)
-        self.layer3 = self._make_layer(BasicBlockDec, 128, num_blocks[2], stride=2)
-        self.layer2 = self._make_layer(BasicBlockDec, 64, num_blocks[1], stride=2)
-        self.layer1 = self._make_layer(BasicBlockDec, 64, num_blocks[0], stride=1)
-        self.conv1 = ResizeConv1d(64, nc, kernel_size=3, scale_factor=2)
-        self.linear_out = nn.Linear(64, output_size)
+        self.layer4 = self._make_layer(BasicBlockDec, bw * 4, num_blocks[3], stride=2)
+        self.layer3 = self._make_layer(BasicBlockDec, bw * 2, num_blocks[2], stride=2)
+        self.layer2 = self._make_layer(BasicBlockDec, bw,     num_blocks[1], stride=2)
+        self.layer1 = self._make_layer(BasicBlockDec, bw,     num_blocks[0], stride=1)
+        self.conv1 = ResizeConv1d(bw, nc, kernel_size=3, scale_factor=2)
+        # Spatial size after all upsamples is fixed at 64 regardless of bw:
+        # F.interpolate(×4) × layer4(×2) × layer3(×2) × layer2(×2) × conv1(×2) = 64.
+        # Channel width bw only affects the feature dimension, not spatial dim.
+        _dec_spatial = 4 * (2 ** 4)  # = 64
+        self.linear_out = nn.Linear(_dec_spatial, output_size)
 
     def _make_layer(self, BasicBlockDec, planes, num_blocks, stride):
         strides = [stride] + [1] * (num_blocks - 1)
@@ -142,10 +156,10 @@ class ResNet18Dec(nn.Module):
 
 
 class VAE(nn.Module):
-    def __init__(self, z_dim):
+    def __init__(self, z_dim, base_width=64):
         super().__init__()
-        self.encoder = ResNet18Enc(z_dim=z_dim)
-        self.decoder = ResNet18Dec(z_dim=z_dim)
+        self.encoder = ResNet18Enc(z_dim=z_dim, base_width=base_width)
+        self.decoder = ResNet18Dec(z_dim=z_dim, base_width=base_width)
 
     def forward(self, x):
         encoded = self.encoder(x)

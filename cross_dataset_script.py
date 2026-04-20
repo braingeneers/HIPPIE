@@ -5,10 +5,9 @@ import time
 code_dir = os.path.abspath(os.path.join(os.path.dirname(__file__), 'hippie'))
 sys.path.append(code_dir)
 
-# Now import directly from the modules (no 'code.' prefix)
 from dataloading import MultiModalEphysDataset, EphysDatasetLabeled, none_safe_collate
 from multimodal_model import MultiModalCVAE, MultiModalCVAETrainModule
-from utils import make_confmat, get_embeddings
+from utils import make_confmat
 from augmentations import AugmentedMultiModalEphysDataset
 
 import torch
@@ -41,9 +40,10 @@ except Exception:
 
 class ResourceMonitor(pl.Callback):
     """Logs GPU/CPU memory and average step time to W&B every N steps."""
-    def __init__(self, log_every_n_steps: int = 50, namespace: str = "resources"):
+    def __init__(self, log_every_n_steps: int = 50, namespace: str = "resources", use_wandb: bool = True):
         self.log_every_n_steps = max(1, log_every_n_steps)
         self.ns = namespace
+        self.use_wandb = use_wandb
         self._last_time = None
         self._accum_step_time = 0.0
         self._accum_steps = 0
@@ -89,17 +89,16 @@ class ResourceMonitor(pl.Callback):
                     metrics[f"{self.ns}/gpu{d}_mem_reserved_mb"] = reserved
                     metrics[f"{self.ns}/gpu{d}_mem_peak_mb"] = peak
 
-            if metrics:
+            if metrics and self.use_wandb:
                 wandb.log(metrics, step=global_step)
 
     def on_validation_epoch_end(self, trainer, pl_module):
-        # Log peaks at epoch boundary, then reset peaks.
         if torch.cuda.is_available():
             metrics = {}
             for d in range(torch.cuda.device_count()):
                 peak = torch.cuda.max_memory_allocated(d) / (1024 ** 2)
                 metrics[f"{self.ns}/val_gpu{d}_mem_peak_mb"] = peak
-            if metrics:
+            if metrics and self.use_wandb:
                 wandb.log(metrics, step=trainer.global_step)
         self._reset_cuda_peaks()
 
@@ -152,7 +151,7 @@ def create_balanced_sampler(dataset, labels):
     return sampler
 
 
-def _log_timer(timer_obj: Timer, prefix: str):
+def _log_timer(timer_obj: Timer, prefix: str, use_wandb: bool = True):
     """Helper to robustly pull timings from Lightning Timer across versions."""
     def _safe_elapsed(phase):
         try:
@@ -173,24 +172,64 @@ def _log_timer(timer_obj: Timer, prefix: str):
     if elapsed_validate is not None:
         payload[f"time/{prefix}_val_s"] = elapsed_validate
 
-    if payload:
+    if payload and use_wandb:
         wandb.log(payload)
 
 
 # ---------- FIX PART 1: Robust embedding extraction ----------
-def get_embeddings_multimodal(loader, model):
-    """Extract embeddings from a multimodal model (robust to call styles & zero-variance rows)."""
+def get_embeddings_multimodal(loader, model, mask_class_labels=False):
+    """Extract embeddings from a multimodal model.
+
+    Args:
+        loader: DataLoader for the dataset
+        model: The CVAE model (can be TrainModule wrapper or raw model)
+        mask_class_labels: If True, use None instead of true class labels during encoding
+                          to prevent data leakage at test time. Source labels are still passed.
+
+    Returns:
+        embeddings: numpy array of shape (N, z_dim)
+        labels: numpy array of class labels
+    """
     model.eval()
+
+    # Move model to GPU if available
+    if torch.cuda.is_available():
+        model = model.cuda()
+
+    # Get the underlying model if wrapped in TrainModule
+    underlying_model = model.model if hasattr(model, 'model') else model
+
     all_embeddings = []
     all_labels = []
 
     with torch.no_grad():
         for sample in loader:
-            try:
-                out = model(sample)
-            except TypeError:
-                out = model(*sample)
-            embedding = out[0].detach().cpu().numpy()
+            data_dict, labels = sample
+
+            # Move data to GPU if available
+            if torch.cuda.is_available():
+                data_dict = {k: v.cuda() for k, v in data_dict.items()}
+                labels = labels.cuda()
+
+            # Extract labels from batch (format: [class_label, source_id])
+            if labels.ndim > 1 and labels.shape[1] > 1:
+                class_labels = labels[:, 0]  # First column: class labels
+                source_labels = labels[:, 1]  # Second column: source labels
+            else:
+                class_labels = labels
+                source_labels = None
+
+            # Mask class labels if requested (prevent leakage during test evaluation)
+            class_labels_for_encoding = None if mask_class_labels else class_labels
+
+            # Get embeddings (mu from latent space)
+            h, mu, log_var = underlying_model.encode(
+                data_dict,
+                source_labels=source_labels,
+                class_labels=class_labels_for_encoding
+            )
+
+            embedding = mu.detach().cpu().numpy()
 
             # Normalize embeddings row-wise (avoid div by zero)
             std = np.std(embedding, axis=1, keepdims=True)
@@ -198,12 +237,7 @@ def get_embeddings_multimodal(loader, model):
             embedding = (embedding - np.mean(embedding, axis=1, keepdims=True)) / std
             all_embeddings.extend(embedding)
 
-            label = sample[1]
-            if getattr(label, "ndim", 1) == 2:
-                cls_label, _ = label.unbind(1)
-            else:
-                cls_label = label
-            all_labels.extend(cls_label.detach().cpu().numpy())
+            all_labels.extend(class_labels.detach().cpu().numpy())
 
     return np.array(all_embeddings), np.array(all_labels)
 
@@ -216,13 +250,13 @@ def _nan_sanitize(x: np.ndarray, name: str, dataset: str):
     return x
 
 
-def load_dataset_data(dataset_name, dataset_files):
+def load_dataset_data(dataset_name, dataset_files, data_dir="../datasets_hippie"):
     """Load waveform, ISI, and ACG data for a dataset."""
-    wf = pd.read_csv(f"../datasets_hippie/{dataset_name}/waveforms.csv").to_numpy()
-    isi = pd.read_csv(f"../datasets_hippie/{dataset_name}/isi_dist.csv").to_numpy()
+    wf = pd.read_csv(f"{data_dir}/{dataset_name}/waveforms.csv").to_numpy()
+    isi = pd.read_csv(f"{data_dir}/{dataset_name}/isi_dist.csv").to_numpy()
 
     # Load ACG data if it exists, otherwise use zeros
-    acg_path = f"../datasets_hippie/{dataset_name}/acg.csv"
+    acg_path = f"{data_dir}/{dataset_name}/acg.csv"
     acg = pd.read_csv(acg_path).to_numpy() if os.path.exists(acg_path) else np.zeros_like(isi)
 
     # Sanitize NaNs
@@ -232,12 +266,12 @@ def load_dataset_data(dataset_name, dataset_files):
 
     # Load labels if they exist
     labels = None
-    labels_path = f"../datasets_hippie/{dataset_name}/labels.csv"
+    labels_path = f"{data_dir}/{dataset_name}/labels.csv"
     if os.path.exists(labels_path):
         labels_df = pd.read_csv(labels_path)
         labels = labels_df[labels_df.columns[0]].values
-    elif os.path.exists(f"../datasets_hippie/{dataset_name}/celltypes.csv"):
-        labels_df = pd.read_csv(f"../datasets_hippie/{dataset_name}/celltypes.csv")
+    elif os.path.exists(f"{data_dir}/{dataset_name}/celltypes.csv"):
+        labels_df = pd.read_csv(f"{data_dir}/{dataset_name}/celltypes.csv")
         labels = labels_df[labels_df.columns[0]].values
 
     source_id = dataset_files[dataset_name]
@@ -264,6 +298,9 @@ if __name__ == '__main__':
     # -------------------------------
     # Parse arguments
     # -------------------------------
+    # Derive config choices dynamically so new ExperimentConfigs entries are always visible
+    _ALL_CONFIGS = sorted(m for m in dir(ExperimentConfigs) if not m.startswith('_'))
+
     parser = argparse.ArgumentParser()
     # Common arguments
     parser.add_argument("--z_dim", type=int, default=10, help="Dimension of latent space")
@@ -303,7 +340,9 @@ if __name__ == '__main__':
     parser.add_argument('--acg-weight', type=float, default=1.0,
                         help='Weight for the ACG modality loss')
 
-    parser.add_argument('--config', type=str, default="baseline", choices=["baseline", "with_source", "with_class", "with_both_embeddings", "with_batch_norm", "full_model", "no_fusion", "with_light_augmentations", "with_heavy_augmentations", "augmentation_ablation"])
+    parser.add_argument('--config', type=str, default="class_decoder_source_bn_aug_reg",
+                        choices=_ALL_CONFIGS,
+                        help="Model configuration. Run with --help to see all options.")
 
     # Class balancing argument
     parser.add_argument("--use_balanced_sampling", action="store_true",
@@ -311,7 +350,17 @@ if __name__ == '__main__':
 
     # DataLoader workers
     parser.add_argument("--num_workers", type=int, default=0,
-                        help="Number of worker processes for data loading (default: 4)")
+                        help="Number of worker processes for data loading (default: 0)")
+
+    # Paths — defaults preserve original layout for backward compatibility
+    parser.add_argument('--data-dir', type=str, default="../datasets_hippie",
+                        help="Directory containing dataset folders (default: ../datasets_hippie)")
+    parser.add_argument('--output-dir', type=str, default="../results_hippie_cross_dataset",
+                        help="Root directory for all output files (default: ../results_hippie_cross_dataset)")
+
+    # W&B control
+    parser.add_argument('--no-wandb', action='store_true',
+                        help="Disable Weights & Biases logging entirely")
 
     args = parser.parse_args()
 
@@ -327,12 +376,25 @@ if __name__ == '__main__':
 
     torch.manual_seed(42)
 
-    # Initialize single wandb run at start
-    wandb.init(
-        project=project,
-        name=f"{args.wandb_tag}-train_{args.training_dataset}-predict_{args.predict_dataset}-config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
-        config=vars(args)
+    # Output directory for this run
+    output_run_dir = os.path.join(
+        args.output_dir,
+        f"train_{args.training_dataset}_predict_{args.predict_dataset}",
+        f"config_{args.config}_zdim_{args.z_dim}_B_{args.beta}"
     )
+
+    # W&B setup — gracefully degrades if init fails (no API key, no internet, etc.)
+    use_wandb = not args.no_wandb
+    if use_wandb:
+        try:
+            wandb.init(
+                project=project,
+                name=f"{args.wandb_tag}-train_{args.training_dataset}-predict_{args.predict_dataset}-config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
+                config=vars(args)
+            )
+        except Exception as e:
+            print(f"Warning: W&B initialization failed ({e}). Running without W&B.")
+            use_wandb = False
 
     # -------------------------------
     # Dataset setup
@@ -362,23 +424,23 @@ if __name__ == '__main__':
 
     print(f"Training on: {args.training_dataset}")
     print(f"Predicting on: {args.predict_dataset}")
-    
+
     # Remove training and predict datasets from pretraining
     pretrain_dataset_files = dataset_files.copy()
     if args.training_dataset in pretrain_dataset_files:
         pretrain_dataset_files.pop(args.training_dataset)
     if args.predict_dataset in pretrain_dataset_files:
         pretrain_dataset_files.pop(args.predict_dataset)
-    
+
     # Remove juxtacellular datasets if they're related to training/predict datasets
     if "juxtacellular" in args.training_dataset or "juxtacellular" in args.predict_dataset:
         pretrain_dataset_files.pop("juxtacellular_mouse_s1_area", None)
         pretrain_dataset_files.pop("juxtacellular_mouse_s1_cell_type", None)
-    
+
     if "cellexplorer" in args.training_dataset or "cellexplorer" in args.predict_dataset:
         pretrain_dataset_files.pop("cellexplorer_cell_type", None)
         pretrain_dataset_files.pop("cellexplorer_area", None)
-    
+
     print(f"Pretraining on: {list(pretrain_dataset_files.keys())}")
 
     # -------------------------------
@@ -389,43 +451,31 @@ if __name__ == '__main__':
     print("=" * 50)
 
     time_phase1_start = time.time()
-    
+
     # Define standard modality sizes - the MultiModalEphysDataset will handle padding/truncation
     modalities = {
         "wave": 50,   # Standard waveform size
         "isi": 100,   # Standard ISI size
         "acg": 200    # Standard ACG size
     }
-    
-    # Get config
-    EXPERIMENT_CONFIGS = {
-        "baseline": ExperimentConfigs.baseline(),
-        "with_source": ExperimentConfigs.with_source(),
-        "with_class": ExperimentConfigs.with_class(),
-        "with_both_embeddings": ExperimentConfigs.with_both_embeddings(),
-        "with_batch_norm": ExperimentConfigs.with_batch_norm(),
-        "full_model": ExperimentConfigs.full_model(),
-        "no_fusion": ExperimentConfigs.no_fusion(),
-        "with_light_augmentations": ExperimentConfigs.with_light_augmentations(),
-        "with_heavy_augmentations": ExperimentConfigs.with_heavy_augmentations(),
-        "augmentation_ablation": ExperimentConfigs.augmentation_ablation(),
-    }
-    config = EXPERIMENT_CONFIGS[args.config]
-    
+
+    # Load config dynamically — automatically includes any new ExperimentConfigs entries
+    config = getattr(ExperimentConfigs, args.config)()
+
     # Load data for pretraining from all datasets except training and predict
     all_waveforms = []
     all_isi = []
     all_acg = []
     labels = []
     datasets_multi = []
-    
+
     for folder in pretrain_dataset_files:
-        wf = pd.read_csv(f"../datasets_hippie/{folder}/waveforms.csv").to_numpy()
-        isi = pd.read_csv(f"../datasets_hippie/{folder}/isi_dist.csv").to_numpy()
+        wf = pd.read_csv(f"{args.data_dir}/{folder}/waveforms.csv").to_numpy()
+        isi = pd.read_csv(f"{args.data_dir}/{folder}/isi_dist.csv").to_numpy()
         # Load ACG data if it exists, otherwise use zeros
-        acg_path = f"../datasets_hippie/{folder}/acg.csv"
+        acg_path = f"{args.data_dir}/{folder}/acg.csv"
         acg = pd.read_csv(acg_path).to_numpy() if os.path.exists(acg_path) else np.zeros_like(isi)
-        
+
         # Sanitize NaNs
         wf = _nan_sanitize(wf, "wave", folder)
         isi = _nan_sanitize(isi, "isi", folder)
@@ -447,13 +497,13 @@ if __name__ == '__main__':
         }
 
         dataset_multi = MultiModalEphysDataset(data_dict, source, mode="multi", modality_sizes=modalities)
-        
+
         # Wrap with augmentations if enabled
         if config.use_augmentations and config.augment_pretraining:
             dataset_multi = AugmentedMultiModalEphysDataset(dataset_multi, config, phase="pretraining")
-        
+
         datasets_multi.append(dataset_multi)
-    
+
     if not datasets_multi:
         print("Warning: No datasets available for pretraining. Skipping pretraining phase.")
         joint_model = None
@@ -461,18 +511,18 @@ if __name__ == '__main__':
     else:
         labels = np.concatenate(labels, axis=0)
         all_multi_dataset = torch.utils.data.ConcatDataset(datasets_multi)
-        
+
         # Split datasets for pretraining
         prop = args.train_val_split
         indices = list(range(len(all_multi_dataset)))
         train_indices, test_indices = random_split(
             indices, [int(prop * len(indices)), len(indices) - int(prop * len(indices))]
         )
-        
+
         # Create dataloaders for pretraining
         train_multi_dataset = torch.utils.data.Subset(all_multi_dataset, train_indices)
         test_multi_dataset = torch.utils.data.Subset(all_multi_dataset, test_indices)
-        
+
         train_loader_multi = torch.utils.data.DataLoader(
             train_multi_dataset, batch_size=args.batch_size, shuffle=True,
             collate_fn=none_safe_collate, num_workers=args.num_workers
@@ -481,8 +531,7 @@ if __name__ == '__main__':
             test_multi_dataset, batch_size=args.batch_size, shuffle=False,
             collate_fn=none_safe_collate, num_workers=args.num_workers
         )
-        
-        
+
         # Create multimodal model for pretraining
         joint_model = MultiModalCVAE(
             modalities=modalities,
@@ -491,14 +540,14 @@ if __name__ == '__main__':
             num_classes=5,  # Dummy value for pretraining
             config=config,
         )
-        
+
         # Define modality weights
         modality_weights = {
             "wave": args.wave_weight,
             "isi": args.isi_weight,
             "acg": args.acg_weight
         }
-        
+
         joint_model = MultiModalCVAETrainModule(
             joint_model,
             modality_weights=modality_weights,
@@ -506,39 +555,40 @@ if __name__ == '__main__':
             weight_decay=args.weight_decay,
             config=config,
         )
-        
+
         # PRETRAIN: callbacks & trainer
         joint_checkpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min")
         joint_earlystop = pl.callbacks.EarlyStopping(monitor="val_loss", patience=args.early_stopping_patience, mode="min")
         timer_pretrain = Timer(duration=None)
-        resource_cb_pretrain = ResourceMonitor(log_every_n_steps=50)
-        
-        # Phase marker for pretrain start
-        wandb.log({"phase": "pretrain_start"})
-        
+        resource_cb_pretrain = ResourceMonitor(log_every_n_steps=50, use_wandb=use_wandb)
+
+        if use_wandb:
+            wandb.log({"phase": "pretrain_start"})
+
+        _pretrain_logger = pl.loggers.WandbLogger(experiment=wandb.run) if use_wandb else False
         joint_trainer = pl.Trainer(
             max_epochs=args.pretrain_max_epochs,
             accelerator=accelerator,
-            logger=pl.loggers.WandbLogger(experiment=wandb.run),
+            logger=_pretrain_logger,
             callbacks=[joint_checkpoint, joint_earlystop, timer_pretrain, resource_cb_pretrain],
             limit_train_batches=limit_train_batches,
             limit_val_batches=limit_val_batches,
             gradient_clip_val=args.gradient_clip_val,
             **trainer_kwargs,
         )
-        
+
         # Train joint model
         joint_trainer.fit(joint_model, train_loader_multi, test_loader_multi)
-        # Log pretrain timing
-        _log_timer(timer_pretrain, prefix="pretrain")
-        
+        _log_timer(timer_pretrain, prefix="pretrain", use_wandb=use_wandb)
+
         joint_path = joint_checkpoint.best_model_path
         joint_model.load_state_dict(torch.load(joint_path)["state_dict"])
 
     time_phase1_end = time.time()
     time_phase1 = time_phase1_end - time_phase1_start
     print(f"\nPhase 1 (Pretraining) completed in {time_phase1:.2f} seconds ({time_phase1/60:.2f} minutes)")
-    wandb.log({"time/phase1_pretrain_seconds": time_phase1, "time/phase1_pretrain_minutes": time_phase1/60})
+    if use_wandb:
+        wandb.log({"time/phase1_pretrain_seconds": time_phase1, "time/phase1_pretrain_minutes": time_phase1/60})
 
     # -------------------------------
     # PHASE 2: FINETUNING
@@ -548,42 +598,41 @@ if __name__ == '__main__':
     print("=" * 50)
 
     time_phase2_start = time.time()
-    
+
     # Load training dataset for finetuning
-    train_wf, train_isi, train_acg, train_labels, train_source_id = load_dataset_data(args.training_dataset, all_dataset_files)
-    
+    train_wf, train_isi, train_acg, train_labels, train_source_id = load_dataset_data(
+        args.training_dataset, all_dataset_files, data_dir=args.data_dir
+    )
+
     if train_labels is None:
         raise ValueError(f"Training dataset '{args.training_dataset}' must have labels for supervised training")
-    
+
     # Create finetuning dataset (without labels for unsupervised adaptation)
     finetune_data_dict = {
         "wave": train_wf,
         "isi": train_isi,
         "acg": train_acg
     }
-    
-    # Keep modalities consistent with pretraining - all datasets will be resized to these dimensions
-    
+
     if joint_model is not None and FINETUNE_WITHOUT_LABELS:
         label_ft = np.full((train_wf.shape[0]), train_source_id)
         finetune_dataset_multi = MultiModalEphysDataset(finetune_data_dict, label_ft, mode="multi", modality_sizes=modalities)
-        
+
         # Debug: Check what sizes we're actually getting
         print(f"Finetuning modality sizes config: {modalities}")
         sample_data = finetune_dataset_multi[0][0]  # Get first sample
         for mod_name, tensor in sample_data.items():
             print(f"Finetune {mod_name} tensor shape: {tensor.shape}")
         print(f"Original training dataset shapes - waveform: {train_wf.shape}, isi: {train_isi.shape}, acg: {train_acg.shape}")
-        
+
         # Split for finetuning
         prop = args.finetune_split
         indices = list(range(len(finetune_dataset_multi)))
         train_indices, test_indices = random_split(
             indices, [int(prop * len(indices)), len(indices) - int(prop * len(indices))]
         )
-        
+
         # Create new model instance for fine-tuning with lower learning rate
-        # Keep the original model architecture
         original_model = joint_model.model
         joint_model = MultiModalCVAETrainModule(
             original_model,
@@ -592,18 +641,17 @@ if __name__ == '__main__':
             weight_decay=args.weight_decay,
             config=config,
         )
-        
-        # Create dataloaders for fine-tuning
+
         # Apply augmentations only to training subset for fine-tuning
         if config.use_augmentations and config.augment_finetuning:
             augmented_finetune_dataset = AugmentedMultiModalEphysDataset(finetune_dataset_multi, config, phase="finetuning")
             train_finetune_dataset = torch.utils.data.Subset(augmented_finetune_dataset, train_indices)
         else:
             train_finetune_dataset = torch.utils.data.Subset(finetune_dataset_multi, train_indices)
-        
+
         # Validation dataset is never augmented
         test_finetune_dataset = torch.utils.data.Subset(finetune_dataset_multi, test_indices)
-        
+
         train_finetune_loader_multi = torch.utils.data.DataLoader(
             train_finetune_dataset, batch_size=args.batch_size, shuffle=False,
             collate_fn=none_safe_collate, num_workers=args.num_workers
@@ -612,38 +660,39 @@ if __name__ == '__main__':
             test_finetune_dataset, batch_size=args.batch_size, shuffle=False,
             collate_fn=none_safe_collate, num_workers=args.num_workers
         )
-        
+
         # FINE-TUNE: callbacks & trainer
         joint_checkpoint = pl.callbacks.ModelCheckpoint(monitor="val_loss", save_top_k=1, mode="min")
         joint_earlystop = pl.callbacks.EarlyStopping(monitor="val_loss", patience=args.early_stopping_patience, mode="min")
         timer_finetune = Timer(duration=None)
-        resource_cb_finetune = ResourceMonitor(log_every_n_steps=50)
-        
-        # Phase marker for finetune start
-        wandb.log({"phase": "finetune_start"})
-        
+        resource_cb_finetune = ResourceMonitor(log_every_n_steps=50, use_wandb=use_wandb)
+
+        if use_wandb:
+            wandb.log({"phase": "finetune_start"})
+
+        _finetune_logger = pl.loggers.WandbLogger(experiment=wandb.run) if use_wandb else False
         joint_trainer = pl.Trainer(
             max_epochs=args.finetune_max_epochs,
             accelerator=accelerator,
-            logger=pl.loggers.WandbLogger(experiment=wandb.run),
+            logger=_finetune_logger,
             callbacks=[joint_checkpoint, joint_earlystop, timer_finetune, resource_cb_finetune],
             limit_train_batches=limit_train_batches,
             limit_val_batches=limit_val_batches,
             gradient_clip_val=args.gradient_clip_val,
             **trainer_kwargs,
         )
-        
+
         joint_trainer.fit(joint_model, train_finetune_loader_multi, test_finetune_loader_multi)
-        # Log finetune timing
-        _log_timer(timer_finetune, prefix="finetune")
-        
+        _log_timer(timer_finetune, prefix="finetune", use_wandb=use_wandb)
+
         joint_path = joint_checkpoint.best_model_path
         joint_model.load_state_dict(torch.load(joint_path)["state_dict"])
 
     time_phase2_end = time.time()
     time_phase2 = time_phase2_end - time_phase2_start
     print(f"\nPhase 2 (Finetuning) completed in {time_phase2:.2f} seconds ({time_phase2/60:.2f} minutes)")
-    wandb.log({"time/phase2_finetune_seconds": time_phase2, "time/phase2_finetune_minutes": time_phase2/60})
+    if use_wandb:
+        wandb.log({"time/phase2_finetune_seconds": time_phase2, "time/phase2_finetune_minutes": time_phase2/60})
 
     # -------------------------------
     # PHASE 3: SUPERVISED TRAINING
@@ -653,7 +702,7 @@ if __name__ == '__main__':
     print("=" * 50)
 
     time_phase3_start = time.time()
-    
+
     # Encode labels for supervised training
     le = LabelEncoder().fit(train_labels)
     train_labels_encoded = le.transform(train_labels)
@@ -674,8 +723,6 @@ if __name__ == '__main__':
 
     num_class_labels = len(np.unique(label_train))
 
-    # Keep modalities consistent across all phases - already defined in pretraining
-
     # Create supervised model
     supervised_joint_model = MultiModalCVAE(
         modalities=modalities,
@@ -684,13 +731,13 @@ if __name__ == '__main__':
         num_classes=num_class_labels,
         config=config,
     )
-    
+
     # Load pretrained weights if available, but skip the class embedding layer
     if joint_model is not None and joint_path is not None:
         joint_seq = torch.load(joint_path)
         if "model.class_embedding.weight" in joint_seq["state_dict"]:
             joint_seq["state_dict"].pop("model.class_embedding.weight")
-        
+
         supervised_joint_model = MultiModalCVAETrainModule(
             supervised_joint_model,
             modality_weights=modality_weights,
@@ -734,7 +781,7 @@ if __name__ == '__main__':
         mode="multi",
         modality_sizes=modalities
     )
-    
+
     # Apply augmentations to supervised training dataset if enabled
     if config.use_augmentations and config.augment_supervised:
         dataset_train_multi = AugmentedMultiModalEphysDataset(dataset_train_multi, config, phase="supervised")
@@ -748,12 +795,11 @@ if __name__ == '__main__':
 
     # Create DataLoader with optional class-balanced sampling
     if args.use_balanced_sampling:
-        # Create balanced sampler for training data
         train_sampler = create_balanced_sampler(dataset_train_multi, label_train)
         train_loader_multi = torch.utils.data.DataLoader(
             dataset_train_multi,
             batch_size=args.supervised_batch_size,
-            sampler=train_sampler,  # Use sampler instead of shuffle
+            sampler=train_sampler,
             collate_fn=none_safe_collate,
             num_workers=args.num_workers
         )
@@ -776,15 +822,16 @@ if __name__ == '__main__':
     joint_earlystop = pl.callbacks.EarlyStopping(monitor="val_loss", patience=args.early_stopping_patience, mode="min")
     lr_monitor_joint = pl.callbacks.LearningRateMonitor(logging_interval="step")
     timer_supervised = Timer(duration=None)
-    resource_cb_supervised = ResourceMonitor(log_every_n_steps=50)
+    resource_cb_supervised = ResourceMonitor(log_every_n_steps=50, use_wandb=use_wandb)
 
-    # Phase marker for supervised start
-    wandb.log({"phase": "supervised_start"})
+    if use_wandb:
+        wandb.log({"phase": "supervised_start"})
 
+    _supervised_logger = pl.loggers.WandbLogger(experiment=wandb.run) if use_wandb else False
     joint_trainer = pl.Trainer(
         max_epochs=args.supervised_max_epochs,
         accelerator=accelerator,
-        logger=pl.loggers.WandbLogger(experiment=wandb.run),
+        logger=_supervised_logger,
         callbacks=[joint_checkpoint, joint_earlystop, lr_monitor_joint, timer_supervised, resource_cb_supervised],
         limit_train_batches=limit_train_batches,
         limit_val_batches=limit_val_batches,
@@ -793,12 +840,12 @@ if __name__ == '__main__':
     )
 
     joint_trainer.fit(supervised_joint_model, train_loader_multi, test_loader_multi)
-    # Log supervised timing
-    _log_timer(timer_supervised, prefix="supervised")
+    _log_timer(timer_supervised, prefix="supervised", use_wandb=use_wandb)
 
     # Load best model checkpoint
     joint_path = joint_checkpoint.best_model_path
-    wandb.log({"best_epoch_joint": joint_path})
+    if use_wandb:
+        wandb.log({"best_epoch_joint": joint_path})
 
     joint_seq = torch.load(joint_path)
     supervised_joint_model.load_state_dict(joint_seq["state_dict"])
@@ -807,7 +854,8 @@ if __name__ == '__main__':
     time_phase3_end = time.time()
     time_phase3 = time_phase3_end - time_phase3_start
     print(f"\nPhase 3 (Supervised Training) completed in {time_phase3:.2f} seconds ({time_phase3/60:.2f} minutes)")
-    wandb.log({"time/phase3_supervised_seconds": time_phase3, "time/phase3_supervised_minutes": time_phase3/60})
+    if use_wandb:
+        wandb.log({"time/phase3_supervised_seconds": time_phase3, "time/phase3_supervised_minutes": time_phase3/60})
 
     # -------------------------------
     # GET EMBEDDINGS FOR TRAINING DATASET
@@ -832,20 +880,24 @@ if __name__ == '__main__':
         train_full_dataset, batch_size=128, collate_fn=none_safe_collate, num_workers=args.num_workers
     )
 
-    # Get embeddings for training dataset
-    train_embeddings, train_labels_final = get_embeddings_multimodal(train_full_loader, supervised_joint_model)
+    # Get embeddings for training dataset (mask class labels — clean test-time behavior)
+    train_embeddings, train_labels_final = get_embeddings_multimodal(
+        train_full_loader, supervised_joint_model, mask_class_labels=True
+    )
 
     # Save training embeddings
-    os.makedirs(f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}", exist_ok=True)
+    os.makedirs(output_run_dir, exist_ok=True)
 
     train_embeddings_df = pd.DataFrame(train_embeddings)
     train_embeddings_df["label"] = le.inverse_transform(train_labels_final.astype(int))
-    train_embeddings_df.to_csv(f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/train_embeddings.csv", index=False)
+    train_embeddings_df.to_csv(os.path.join(output_run_dir, "train_embeddings.csv"), index=False)
 
     # -------------------------------
     # LOAD AND PROCESS PREDICT DATASET
     # -------------------------------
-    predict_wf, predict_isi, predict_acg, predict_labels, predict_source_id = load_dataset_data(args.predict_dataset, all_dataset_files)
+    predict_wf, predict_isi, predict_acg, predict_labels, predict_source_id = load_dataset_data(
+        args.predict_dataset, all_dataset_files, data_dir=args.data_dir
+    )
 
     if predict_labels is None:
         print(f"Warning: Predict dataset '{args.predict_dataset}' has no labels. Creating dummy labels for processing.")
@@ -853,13 +905,12 @@ if __name__ == '__main__':
         predict_labels[:] = "unknown"
 
     # Keep a combined encoder for reporting/saving (not used by the model)
-    # Convert all labels to strings to avoid type mixing issues
     train_labels_str = [str(label) for label in train_labels]
     predict_labels_str = [str(label) for label in predict_labels]
     all_unique_labels = np.unique(np.concatenate([train_labels_str, predict_labels_str]))
     le_combined = LabelEncoder().fit(all_unique_labels)
 
-    # ---------- FIX PART 3 applied: map predict labels for MODEL space ----------
+    # Map predict labels for MODEL space
     predict_labels_for_model = map_labels_to_training_encoder(le, predict_labels, fallback=0)
 
     # Create predict dataset
@@ -880,34 +931,35 @@ if __name__ == '__main__':
         predict_dataset, batch_size=128, collate_fn=none_safe_collate, num_workers=args.num_workers
     )
 
-    # Get embeddings for predict dataset
-    predict_embeddings, predict_labels_final = get_embeddings_multimodal(predict_loader, supervised_joint_model)
+    # Get embeddings for predict dataset (mask_class_labels=True to prevent data leakage)
+    predict_embeddings, predict_labels_final = get_embeddings_multimodal(
+        predict_loader, supervised_joint_model, mask_class_labels=True
+    )
 
     time_embedding_end = time.time()
     time_embedding = time_embedding_end - time_embedding_start
     print(f"\nEmbedding extraction completed in {time_embedding:.2f} seconds ({time_embedding/60:.2f} minutes)")
-    wandb.log({"time/embedding_extraction_seconds": time_embedding, "time/embedding_extraction_minutes": time_embedding/60})
+    if use_wandb:
+        wandb.log({"time/embedding_extraction_seconds": time_embedding, "time/embedding_extraction_minutes": time_embedding/60})
 
     # Save predict embeddings
     predict_embeddings_df = pd.DataFrame(predict_embeddings)
-    # Labels in training-encoder space (may contain fallback)
-    predict_embeddings_df["label_training_space"] = le.inverse_transform(np.clip(predict_labels_final.astype(int), 0, len(le.classes_) - 1))
-    # Also store the original labels for reference
+    predict_embeddings_df["label_training_space"] = le.inverse_transform(
+        np.clip(predict_labels_final.astype(int), 0, len(le.classes_) - 1)
+    )
     predict_embeddings_df["label_original"] = predict_labels
-    predict_embeddings_df.to_csv(f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/predict_embeddings.csv", index=False)
+    predict_embeddings_df.to_csv(os.path.join(output_run_dir, "predict_embeddings.csv"), index=False)
 
     # -------------------------------
     # TRAIN KNN ON TRAINING EMBEDDINGS AND PREDICT ON TEST EMBEDDINGS
     # -------------------------------
     time_knn_start = time.time()
 
-    # We need to use the original training label encoder for KNN training
-    # since we want to predict classes that exist in the training set
     train_knn_labels = train_labels_final.astype(int)
 
     # Evaluate using KNN with different neighbor counts
     neighbor_options = list(range(5, min(20, len(np.unique(train_knn_labels)) * 3)))
-    if not neighbor_options:  # If we have very few classes
+    if not neighbor_options:
         neighbor_options = [3, 5]
 
     best_accuracy = -1
@@ -917,7 +969,6 @@ if __name__ == '__main__':
     print(f"Training KNN with {len(train_embeddings)} training samples and {len(np.unique(train_knn_labels))} classes")
     print(f"Testing different neighbor counts: {neighbor_options}")
 
-    # For cross-validation on training set to select best k
     from sklearn.model_selection import cross_val_score
 
     cv_scores = {}
@@ -927,29 +978,23 @@ if __name__ == '__main__':
         cv_scores[neighbor] = np.mean(cv_score)
         print(f"KNN with {neighbor} neighbors: CV balanced accuracy = {np.mean(cv_score):.4f} ± {np.std(cv_score):.4f}")
 
-    # Select best k based on cross-validation
     best_neighbors = max(cv_scores, key=cv_scores.get)
     print(f"Selected best k = {best_neighbors} with CV score = {cv_scores[best_neighbors]:.4f}")
 
-    # Train final KNN model with best k
     final_knn = KNeighborsClassifier(n_neighbors=best_neighbors)
     final_knn.fit(train_embeddings, train_knn_labels)
 
-    # Make predictions on predict dataset
     predictions = final_knn.predict(predict_embeddings)
     prediction_probabilities = final_knn.predict_proba(predict_embeddings)
 
-    # Convert predictions back to original labels (training encoder space)
     predicted_labels = le.inverse_transform(predictions.astype(int))
 
     # Calculate accuracy if we have true labels for the predict dataset
     accuracy_calculated = False
-    if not (predict_labels == "unknown").all():  # If we have real labels
-        # Create a label encoder for the predict dataset to get numeric labels for evaluation
+    if not (predict_labels == "unknown").all():
         le_predict = LabelEncoder().fit(predict_labels)
         predict_labels_encoded_for_eval = le_predict.transform(predict_labels)
 
-        # Find overlapping classes between training and predict datasets
         train_classes = set(le.classes_)
         predict_classes = set(le_predict.classes_)
         overlapping_classes = train_classes.intersection(predict_classes)
@@ -957,13 +1002,11 @@ if __name__ == '__main__':
         if overlapping_classes:
             print(f"Overlapping classes: {overlapping_classes}")
 
-            # Create mapping for evaluation
             true_labels_for_eval = []
             pred_labels_for_eval = []
 
             for i, (true_label, pred_idx) in enumerate(zip(predict_labels, predictions)):
                 if true_label in overlapping_classes:
-                    # Map both true and predicted labels to the training label encoder
                     true_labels_for_eval.append(le.transform([true_label])[0])
                     pred_labels_for_eval.append(pred_idx)
 
@@ -972,24 +1015,21 @@ if __name__ == '__main__':
                 print(f"Cross-dataset balanced accuracy: {accuracy:.4f}")
                 accuracy_calculated = True
 
-                # Confusion matrix
                 conf_matrix = confusion_matrix(true_labels_for_eval, pred_labels_for_eval)
                 available_classes = [c for c in le.classes_ if c in overlapping_classes]
 
-                # Log metrics
-                wandb.log({
-                    "cross_dataset_balanced_accuracy": accuracy,
-                    "best_k_neighbors": best_neighbors,
-                    "num_overlapping_classes": len(overlapping_classes),
-                    "num_evaluated_samples": len(true_labels_for_eval)
-                })
+                if use_wandb:
+                    wandb.log({
+                        "cross_dataset_balanced_accuracy": accuracy,
+                        "best_k_neighbors": best_neighbors,
+                        "num_overlapping_classes": len(overlapping_classes),
+                        "num_evaluated_samples": len(true_labels_for_eval)
+                    })
 
-                # Make confusion matrix figure if we have the function
                 try:
                     figure_multi = make_confmat(conf_matrix, available_classes, best_neighbors)
-                    wandb.log({
-                        f"cross_dataset_confusion_matrix": wandb.Image(figure_multi),
-                    })
+                    if use_wandb:
+                        wandb.log({"cross_dataset_confusion_matrix": wandb.Image(figure_multi)})
                 except Exception as e:
                     print(f"Could not create confusion matrix figure: {e}")
             else:
@@ -997,59 +1037,58 @@ if __name__ == '__main__':
         else:
             print("No overlapping classes between training and predict datasets")
 
-    if not accuracy_calculated:
+    if not accuracy_calculated and use_wandb:
         wandb.log({"best_k_neighbors": best_neighbors})
 
     time_knn_end = time.time()
     time_knn = time_knn_end - time_knn_start
     print(f"\nKNN training and evaluation completed in {time_knn:.2f} seconds ({time_knn/60:.2f} minutes)")
-    wandb.log({"time/knn_training_seconds": time_knn, "time/knn_training_minutes": time_knn/60})
+    if use_wandb:
+        wandb.log({"time/knn_training_seconds": time_knn, "time/knn_training_minutes": time_knn/60})
 
     # -------------------------------
     # SAVE PREDICTIONS
     # -------------------------------
-    # Create predictions dataframe
     predictions_df = pd.DataFrame({
-        "predicted_label": predicted_labels,        # in training encoder space
-        "true_label": predict_labels,               # original predict labels
+        "predicted_label": predicted_labels,
+        "true_label": predict_labels,
         "prediction_confidence": np.max(prediction_probabilities, axis=1)
     })
 
-    # Add probability columns for each class
     for i, class_name in enumerate(le.classes_):
         predictions_df[f"prob_{class_name}"] = prediction_probabilities[:, i]
 
-    # Save predictions
-    predictions_df.to_csv(f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/predictions.csv", index=False)
+    predictions_df.to_csv(os.path.join(output_run_dir, "predictions.csv"), index=False)
 
     # -------------------------------
     # LOG ARTIFACTS TO WANDB
     # -------------------------------
-    # Upload embeddings and predictions
-    wandb.log_artifact(
-        f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/train_embeddings.csv",
-        name=f"train_embeddings_{args.training_dataset}_config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
-        type="embeddings"
-    )
+    if use_wandb:
+        wandb.log_artifact(
+            os.path.join(output_run_dir, "train_embeddings.csv"),
+            name=f"train_embeddings_{args.training_dataset}_config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
+            type="embeddings"
+        )
+        wandb.log_artifact(
+            os.path.join(output_run_dir, "predict_embeddings.csv"),
+            name=f"predict_embeddings_{args.predict_dataset}_config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
+            type="embeddings"
+        )
+        wandb.log_artifact(
+            os.path.join(output_run_dir, "predictions.csv"),
+            name=f"predictions_train_{args.training_dataset}_predict_{args.predict_dataset}_config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
+            type="predictions"
+        )
+        if args.upload_model:
+            wandb.log_artifact(
+                joint_path,
+                name=f'cross_dataset_model_train_{args.training_dataset}_predict_{args.predict_dataset}_z{args.z_dim}_lr{args.learning_rate}.pt',
+                type='model'
+            )
 
-    wandb.log_artifact(
-        f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/predict_embeddings.csv",
-        name=f"predict_embeddings_{args.predict_dataset}_config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
-        type="embeddings"
-    )
-
-    wandb.log_artifact(
-        f"../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/predictions.csv",
-        name=f"predictions_train_{args.training_dataset}_predict_{args.predict_dataset}_config_{args.config}_zdim_{args.z_dim}_B_{args.beta}",
-        type="predictions"
-    )
-
-    # Upload model if requested
-    if args.upload_model:
-        wandb.log_artifact(joint_path, name=f'cross_dataset_model_train_{args.training_dataset}_predict_{args.predict_dataset}_z{args.z_dim}_lr{args.learning_rate}.pt', type='model')
-
-    # Hyperparameters already logged during wandb.init()
-    # Final log
+    # -------------------------------
+    # TIMING SUMMARY
+    # -------------------------------
     time_total = time_phase1 + time_phase2 + time_phase3 + time_embedding + time_knn
 
     print("\n" + "="*50)
@@ -1064,17 +1103,18 @@ if __name__ == '__main__':
     print(f"TOTAL TIME:                {time_total:8.2f}s ({time_total/60:6.2f} min)")
     print("="*50 + "\n")
 
-    wandb.log({
-        "time/total_seconds": time_total,
-        "time/total_minutes": time_total/60,
-        "time/phase1_percentage": 100*time_phase1/time_total,
-        "time/phase2_percentage": 100*time_phase2/time_total,
-        "time/phase3_percentage": 100*time_phase3/time_total,
-        "time/embedding_percentage": 100*time_embedding/time_total,
-        "time/knn_percentage": 100*time_knn/time_total,
-        "phase": "complete"
-    })
-    wandb.finish()
+    if use_wandb:
+        wandb.log({
+            "time/total_seconds": time_total,
+            "time/total_minutes": time_total/60,
+            "time/phase1_percentage": 100*time_phase1/time_total,
+            "time/phase2_percentage": 100*time_phase2/time_total,
+            "time/phase3_percentage": 100*time_phase3/time_total,
+            "time/embedding_percentage": 100*time_embedding/time_total,
+            "time/knn_percentage": 100*time_knn/time_total,
+            "phase": "complete"
+        })
+        wandb.finish()
 
     print("="*50)
     print("CROSS-DATASET CLASSIFICATION COMPLETE")
@@ -1083,7 +1123,7 @@ if __name__ == '__main__':
     print(f"Predict dataset: {args.predict_dataset}")
     print(f"Training classes: {list(le.classes_)}")
     print(f"Best k for KNN: {best_neighbors}")
-    print(f"Output directory: ../results_hippie_cross_dataset/train_{args.training_dataset}_predict_{args.predict_dataset}/config_{args.config}_zdim_{args.z_dim}_B_{args.beta}/")
+    print(f"Output directory: {output_run_dir}/")
     print("\nFiles generated:")
     print("- train_embeddings.csv: Embeddings for training dataset")
     print("- predict_embeddings.csv: Embeddings for predict dataset")
