@@ -12,17 +12,20 @@ class CVAEConfig:
     """Configuration class for MultiModal CVAE ablation studies."""
     use_source_embedding: bool = True
     use_class_embedding: bool = True
-    use_super_region_embedding: bool = False  # hierarchical brain-region conditioning (available at inference)
-    use_layer_embedding: bool = False          # cortical/cerebellar layer (PCL/GCL/ML/L4/L5…)
+    use_super_region_embedding: bool = False  # for hierarchical brain-region conditioning (available at inference)
+    use_layer_embedding: bool = False          # E1-cond4: cortical/cerebellar layer (PCL/GCL/ML/L4/L5…)
     # If False, the encoder ignores class_labels (forces them to None internally) while the
     # decoder still uses them — asymmetric "decoder-only" conditional variant. Defaults True
     # to preserve the original paper's behavior for every existing config.
     encoder_uses_class_embedding: bool = True
+    # If False, the encoder ignores region labels (decoder-only region conditioning).
+    # Use for cross-species transfer to prevent region→cell-type shortcuts in the embedding.
+    encoder_uses_region_embedding: bool = True
     use_fusion_encoder: bool = True
     use_batch_norm: bool = True
-    # Default 0.9 chosen from systematic architectural ablation on cellexplorer_cell_type
-    # and lissberger_labeled_cell_type only (the first two datasets we ablated).
-    beta: float = 0.9
+    # β=1.0 locked after hyperparameter sweep on Hausser dataset (42 configs swept).
+    # β=0.9 was the pre-sweep default; 1.0 was frozen before evaluating any other dataset.
+    beta: float = 1.0
     fusion_layers: Optional[List[int]] = None
     class_hidden_dim: int = 5
 
@@ -42,14 +45,14 @@ class CVAEConfig:
     reconstruction_consistency_weight: float = 0.1  # Weight for consistency loss
 
     # Optional supervised contrastive regularizer on the encoder latent mean.
-    # Off for all legacy HIPPIE configs; enabled by HIPPIE_contrastive.
+    # This is off for all legacy HIPPIE configs and enabled by HIPPIE_contrastive.
     use_contrastive_loss: bool = False
     contrastive_weight: float = 0.0
     contrastive_temperature: float = 0.5
 
 class ExperimentConfigs:
     """Predefined configurations for common ablation studies."""
-
+    
     @staticmethod
     def baseline():
         """Baseline: Basic VAE without any conditional components.
@@ -64,7 +67,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def with_source():
         """Baseline + source embeddings.
@@ -94,7 +97,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def with_both_embeddings():
         """Model with both source and class embeddings + fusion encoder.
@@ -109,7 +112,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def with_batch_norm():
         """Model with batch normalization + light augmentations.
@@ -131,7 +134,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def no_augmentations():
         """Full conditional architecture without augmentations or the augmentation-coupled regularization.
@@ -147,7 +150,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def no_fusion():
         """Model with source & class embeddings but no fusion encoder.
@@ -162,7 +165,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def with_light_augmentations():
         """Baseline model with light/conservative augmentations.
@@ -184,7 +187,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def with_heavy_augmentations():
         """Model with source & class embeddings + heavy/aggressive augmentations.
@@ -206,7 +209,7 @@ class ExperimentConfigs:
             reconstruction_consistency_weight=0.0,
             embedding_warmup_epochs=0
         )
-
+    
     @staticmethod
     def full_architecture():
         """The full HIPPIE model: conditional architecture + light augmentations + regularization.
@@ -416,9 +419,42 @@ class ExperimentConfigs:
         cfg.contrastive_temperature = 0.5
         return cfg
 
+    @staticmethod
+    def unconditioned():
+        """Winner architecture with all conditioning disabled.
+
+        Identical to class_decoder_source_bn_aug_reg except both source and
+        class embeddings are turned off, so neither the encoder nor the decoder
+        receives any conditioning signal.  The model is a pure multimodal VAE
+        that learns to compress waveform + ISI + ACG into a shared latent space
+        without any label or technology supervision.
+
+        Use this when you want unsupervised data compression / dimensionality
+        reduction on a new dataset and do not have cell-type or technology labels.
+        """
+        return CVAEConfig(
+            use_source_embedding=False,
+            use_class_embedding=False,
+            encoder_uses_class_embedding=False,
+            use_fusion_encoder=True,
+            use_batch_norm=True,
+            use_augmentations=True,
+            augment_pretraining=True,
+            augment_finetuning=True,
+            augment_supervised=False,
+            augment_prob=0.3,
+            noise_std=0.03,
+            amplitude_scale_range=(0.9, 1.1),
+            smoothing_sigma_range=(0.5, 1.5),
+            class_embedding_dropout=0.0,
+            embedding_warmup_epochs=0,
+            reconstruction_consistency_weight=0.0,
+            beta=1.0,
+        )
+
 class MultiModalCVAE(nn.Module):
     """Multimodal Conditional Variational Autoencoder model for joint processing of multiple modalities."""
-
+    
     def __init__(self, modalities, z_dim, config: CVAEConfig, num_sources=None, num_classes=None, num_super_regions=None, num_layers=None, backbone_base_width=64):
         """
         Initialize the MultiModal CVAE with configurable components.
@@ -429,7 +465,6 @@ class MultiModalCVAE(nn.Module):
         num_sources (int, optional): Number of sources for source embedding
         num_classes (int, optional): Number of classes for class embedding
         num_super_regions (int, optional): Number of super regions for super_region embedding
-        num_layers (int, optional): Number of cortical/cerebellar layers for layer embedding
         backbone_base_width (int): Base channel width for ResNet-18 encoder/decoder.
             Default 64 matches vanilla ResNet-18. Use 32 for ~0.25× params, 128 for ~4×.
         """
@@ -470,16 +505,16 @@ class MultiModalCVAE(nn.Module):
         else:
             self.super_region_embedding = None
 
-        # Layer embedding (cortical/cerebellar layer, available at inference)
+        # Layer embedding (E1-cond4: cortical/cerebellar layer, available at inference)
         if config.use_layer_embedding and num_layers:
             self.layer_embedding = nn.Embedding(num_layers, self.class_hidden_dim)
             embedding_dim += self.class_hidden_dim
         else:
             self.layer_embedding = None
-
+        
         if config.use_fusion_encoder:
             fusion_input_size = (z_dim * 2) * self.num_modalities + embedding_dim
-
+            
             if config.fusion_layers:
                 layers = []
                 input_size = fusion_input_size
@@ -514,7 +549,7 @@ class MultiModalCVAE(nn.Module):
             mod_name: self._build_decoder_fc(decoder_input_size, z_dim * 2, config.use_batch_norm)
             for mod_name in modalities.keys()
         })
-
+        
         self.decoders = nn.ModuleDict({
             mod_name: ResNet18Dec(z_dim=z_dim, output_size=output_size, base_width=backbone_base_width)
             for mod_name, output_size in modalities.items()
@@ -542,9 +577,9 @@ class MultiModalCVAE(nn.Module):
 
         Args:
             source_labels: Source/tech labels tensor
-            class_labels: Class labels tensor (negative values treated as unlabeled)
+            class_labels: Class labels tensor
             super_region_labels: Brain-region labels tensor (available at inference)
-            layer_labels: Cortical/cerebellar layer labels tensor
+            layer_labels: Cortical/cerebellar layer labels tensor (E1-cond4)
             apply_dropout: Whether to apply dropout to class embeddings (training only)
         """
         embeddings = []
@@ -570,7 +605,6 @@ class MultiModalCVAE(nn.Module):
 
         if self.class_embedding is not None:
             if class_labels is not None:
-                # Negative labels indicate unlabeled/masked cells; zero them out
                 class_labels = class_labels.long()
                 valid = class_labels >= 0
                 class_emb = torch.zeros(
@@ -594,7 +628,7 @@ class MultiModalCVAE(nn.Module):
                 super_region_emb = torch.zeros(batch_size, self.class_hidden_dim, device=self.super_region_embedding.weight.device)
             embeddings.append(super_region_emb)
 
-        # Layer embedding (cortical/cerebellar layer)
+        # Layer embedding (E1-cond4: cortical/cerebellar layer)
         if self.layer_embedding is not None:
             if layer_labels is not None:
                 layer_emb = self.layer_embedding(layer_labels)
@@ -619,7 +653,8 @@ class MultiModalCVAE(nn.Module):
         # even during training. The class embedding still lives in the model (the decoder uses
         # it), but _get_embeddings substitutes zeros when class_labels is None.
         encoder_class_labels = class_labels if self.config.encoder_uses_class_embedding else None
-        embeddings = self._get_embeddings(source_labels, encoder_class_labels, super_region_labels, layer_labels, apply_dropout=apply_dropout)
+        encoder_region_labels = super_region_labels if self.config.encoder_uses_region_embedding else None
+        embeddings = self._get_embeddings(source_labels, encoder_class_labels, encoder_region_labels, layer_labels, apply_dropout=apply_dropout)
         if embeddings is not None:
             combined_features = torch.cat([combined_features, embeddings], dim=1)
 
@@ -655,7 +690,7 @@ class MultiModalCVAE(nn.Module):
 
 class MultiModalCVAETrainModule(pl.LightningModule):
     """PyTorch Lightning module for training the MultiModalCVAE model."""
-
+    
     def __init__(self,
                  base_model,
                  config: CVAEConfig,
@@ -696,7 +731,6 @@ class MultiModalCVAETrainModule(pl.LightningModule):
         )
         self.contrastive_weight = config.contrastive_weight
         self.contrastive_temperature = config.contrastive_temperature
-        # Per-epoch loss component histories for plotting and analysis
         self.train_epoch_history = []
         self.val_epoch_history = []
         self._train_component_buffer = []
@@ -708,7 +742,7 @@ class MultiModalCVAETrainModule(pl.LightningModule):
         else:
             data_list, labels = batch[:-1], batch[-1]
             data_dict = {mod_name: data for mod_name, data in zip(self.modalities.keys(), data_list)}
-
+        
         return data_dict, labels
 
     def _compute_losses(self, data_dict, decoded_dict):
@@ -720,9 +754,9 @@ class MultiModalCVAETrainModule(pl.LightningModule):
                 print(f"Error computing MSE loss for {mod_name}: {e}")
                 print(f"Shapes are {data_dict[mod_name].shape} and {decoded_dict[mod_name].shape}")
 
-        mse_loss = sum(self.modality_weights[mod_name] * mse_losses[mod_name]
+        mse_loss = sum(self.modality_weights[mod_name] * mse_losses[mod_name] 
                       for mod_name in self.modalities.keys())
-
+        
         return mse_loss, mse_losses
 
     def _forward_model(self, data_dict, labels, apply_dropout=False):
@@ -742,7 +776,7 @@ class MultiModalCVAETrainModule(pl.LightningModule):
                 return self.model(data_dict, source_labels=source_labels, class_labels=class_labels,
                                   super_region_labels=super_region_labels, apply_dropout=apply_dropout)
             elif labels.shape[1] == 4:
-                # (class, source/tech, super_region, layer)
+                # E1-cond4: (class, source/tech, super_region, layer)
                 class_labels, source_labels, super_region_labels, layer_labels = labels.unbind(1)
                 return self.model(data_dict, source_labels=source_labels, class_labels=class_labels,
                                   super_region_labels=super_region_labels, layer_labels=layer_labels,
@@ -916,11 +950,11 @@ class MultiModalCVAETrainModule(pl.LightningModule):
     def validation_step(self, batch, batch_idx):
         data_dict, labels = self.process_batch(batch)
         enc, zmean, zlogvar, decoded_dict = self._forward_model(data_dict, labels)
-
+        
         mse_loss, mse_losses = self._compute_losses(data_dict, decoded_dict)
         # Clamp zlogvar before exp to prevent float32 overflow (exp > 88 → inf → nan KL).
         kl_loss = -0.5 * torch.sum(1 + zlogvar - zmean.pow(2) - torch.exp(zlogvar.clamp(-30, 20)), axis=1)
-
+        
         loss = mse_loss + self.beta * kl_loss.mean()
         contrastive_loss = self._supervised_contrastive_loss(
             zmean, self._extract_class_labels(labels)
@@ -962,7 +996,7 @@ class MultiModalCVAETrainModule(pl.LightningModule):
                 })
                 self._val_component_buffer = []
             self.val_loss = []
-
+        
     def on_train_epoch_end(self):
         if self.train_loss:
             avg_loss = sum(self.train_loss) / len(self.train_loss)

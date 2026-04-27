@@ -2,3 +2,5 @@ from .multimodal_model import MultiModalCVAE, MultiModalCVAETrainModule, CVAECon
 from .dataloading import MultiModalEphysDataset, EphysDatasetLabeled, none_safe_collate
 from .augmentations import AugmentedMultiModalEphysDataset
 from .backbones import ResNet18Enc, ResNet18Dec
+from .inference import HIPPIEClassifier, TECHNOLOGY_IDS
+from .vae import VAECompressor, train_vae
