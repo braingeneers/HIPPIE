@@ -5,7 +5,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import pytorch_lightning as pl
-from backbones import ResNet18Enc, ResNet18Dec
+from .backbones import ResNet18Enc, ResNet18Dec
 
 @dataclass
 class CVAEConfig:
