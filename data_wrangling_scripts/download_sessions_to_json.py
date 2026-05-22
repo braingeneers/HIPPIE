@@ -14,7 +14,7 @@ from pathlib import Path
 from allensdk.brain_observatory.ecephys.ecephys_project_cache import EcephysProjectCache
 import argparse
 import sys
-from typing import Optional, Dict, Any
+from typing import Optional
 
 
 def setup_cache(output_dir: str = './local1/ecephys_cache_dir') -> EcephysProjectCache:

@@ -303,7 +303,7 @@ if __name__ == '__main__':
 
     parser = argparse.ArgumentParser()
     # Common arguments
-    parser.add_argument("--z_dim", type=int, default=10, help="Dimension of latent space")
+    parser.add_argument("--z_dim", type=int, default=30, help="Dimension of latent space (locked default: z=30, β=1.0 from Hausser sweep)")
     parser.add_argument('--weight-decay', type=float, default=0.01)
     parser.add_argument('--learning-rate', type=float, default=0.001)
     parser.add_argument('--beta', type=float, default=1, help="Weight for KL divergence loss")
@@ -316,9 +316,9 @@ if __name__ == '__main__':
     parser.add_argument('--pretrain-max-epochs', type=int, default=100)
     parser.add_argument('--finetune-max-epochs', type=int, default=10)
     parser.add_argument('--supervised-max-epochs', type=int, default=5)
-    parser.add_argument('--batch-size', type=int, default=512)
+    parser.add_argument('--batch-size', type=int, default=128)
     parser.add_argument('--supervised-batch-size', type=int, default=64)
-    parser.add_argument('--early-stopping-patience', type=int, default=30)
+    parser.add_argument('--early-stopping-patience', type=int, default=5)
     parser.add_argument('--gradient-clip-val', type=float, default=1.0)
     parser.add_argument('--train-val-split', type=float, default=0.9)
     parser.add_argument('--finetune-split', type=float, default=0.1)

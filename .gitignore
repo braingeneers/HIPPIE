@@ -12,6 +12,8 @@ data/allen_scope_neuropixel/*.csv
 data_wrangling_scripts/*.csv
 data_wrangling_scripts/2024-02-04-T160000-chip20380_params_params_low_ISI_acqm_neurocurator_csv/*.csv
 data_wrangling_scripts/allen_cache/*.csv
+data_wrangling_scripts/data_acqm/
+data_wrangling_scripts/allen_session_754312389_neurocurator_csv/
 outputs/
 # C extensions
 *.so

@@ -4,6 +4,7 @@ import matplotlib.pyplot as plt
 import pandas as pd
 from sklearn.preprocessing import LabelEncoder
 from sklearn.model_selection import StratifiedKFold
+import torch
 
 
 def make_confmat(cm, label_names, best_neighbors_waveform):
@@ -71,3 +72,30 @@ def generate_kfolds(dataset_path):
 
     return folds
 
+
+# Try K nearest neighbor
+def get_embeddings(dataloader_wave, dataloader_time, wave_model, time_model):
+    embedding_waveform = []
+    embedding_isi = []
+    for i, ((wave, label_wave), (time, label_time)) in enumerate(zip(dataloader_wave, dataloader_time)):
+        assert (label_wave == label_time).all()
+        w_out = wave_model((wave, label_wave))
+        t_out = time_model((time, label_time))
+        e_wave, d_wave = w_out[0], w_out[-1]  # w_out = enc, zmean, zlogvar, dec
+        e_time, d_time = t_out[0], t_out[-1]  # t_out = enc, zmean, zlogvar, dec
+
+        e_wave = (e_wave - e_wave.mean(dim=1)[:, None]) / e_wave.std(dim=1)[:, None]
+        e_time = (e_time - e_time.mean(dim=1)[:, None]) / e_time.std(dim=1)[:, None]
+
+        embedding_waveform.append(e_wave)
+        embedding_isi.append(e_time)
+    embedding_waveform = torch.cat(embedding_waveform, dim=0)
+    embedding_isi = torch.cat(embedding_isi, dim=0)
+    # Run Umap in the embeddings
+    embedding_waveform = embedding_waveform.detach().numpy()
+    embedding_isi = embedding_isi.detach().numpy()
+    # labels = torch.cat(labels, dim=0).detach().numpy()
+    joint_embeddings = np.concatenate([embedding_waveform, embedding_isi], axis=1)
+    # normalize the embeddings
+
+    return embedding_waveform, embedding_isi, joint_embeddings
