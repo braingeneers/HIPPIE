@@ -64,8 +64,8 @@ class VAECompressor:
     ) -> np.ndarray:
         """Encode neurons into the latent space.
 
-        Inputs must already be preprocessed (same normalization as
-        hippie_adapter.extract_features):
+        Inputs must already be preprocessed (see
+        examples/extract_embeddings.py for the reference implementation):
           - wave: (N, 50)  min-max → [-1, 1]
           - isi:  (N, 100) log(x+1) → min-max → [-1, 1]
           - acg:  (N, 100) min-max → [-1, 1]
@@ -159,9 +159,9 @@ def train_vae(
     checkpoint but with no class or technology conditioning.  Loss is the
     standard beta-VAE ELBO: MSE reconstruction + KL divergence (beta=1).
 
-    Inputs must be preprocessed by hippie_adapter.extract_features() or the
-    equivalent normalization (wave: min-max [-1,1]; isi: log1p then min-max;
-    acg: min-max [-1,1]).
+    Inputs must be preprocessed the same way as the pretrained checkpoint (see
+    examples/extract_embeddings.py): wave: min-max [-1,1]; isi: log1p then
+    min-max; acg: min-max [-1,1].
 
     Args:
         wave: (N, 50) preprocessed waveform array.

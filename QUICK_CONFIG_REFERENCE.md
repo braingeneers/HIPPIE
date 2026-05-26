@@ -120,4 +120,4 @@ consistency loss) further stabilizes training.
 4. **Production default is `class_decoder_source_bn_aug_reg`**: the locked production config across paper datasets
 
 Paper-reproducing accuracy numbers and ablation results live in
-[`hippie_benchmarking_release`](https://github.com/braingeneers/hippie_benchmarking_release).
+[`hippie_benchmarking_release`](https://github.com/JesusGF1/hippie_benchmarking_release).

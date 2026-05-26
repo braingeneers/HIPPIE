@@ -29,7 +29,7 @@ The framework uses a trimodal CVAE architecture with configurable ablation studi
 - **NWB-native classification**: `hippie_nwb_classify.py` runs straight from NWB sessions (precomputed units or raw traces via SpikeInterface)
 - **Docker Support**: Containerized deployment for reproducibility
 
-> Paper-reproducing benchmarking (K-fold, KNN/MLP accuracy heads, balanced-accuracy reporting, compute-parity timing, figure generation) lives in the companion repository [`HIPPIE-benchmarking-release`](https://github.com/JesusGF1/HIPPIE-benchmarking-release), not here.
+> Paper-reproducing benchmarking (K-fold, KNN/MLP accuracy heads, balanced-accuracy reporting, compute-parity timing, figure generation) lives in the companion repository [`hippie_benchmarking_release`](https://github.com/JesusGF1/hippie_benchmarking_release), not here.
 
 ## Installation
 
@@ -104,6 +104,11 @@ Normalization is applied internally — do **not** pre-normalize your inputs:
 - waveform: min-max to [−1, 1] per row
 - ISI: `log(x + 1)`, then min-max to [−1, 1]
 - ACG: min-max to [−1, 1]
+
+Each modality is also resampled to a fixed internal length at load time
+(waveform → 50, ISI → 100, ACG → 100 via linear interpolation), so the exact
+input bin count is flexible — the canonical `(N, 201)` ACG and `(N, 100)` ISI
+above are resampled to the model's expected sizes automatically.
 
 **Sampling-rate assumption**: the feature-extraction code in `data_wrangling_scripts/neurocurator.py` assumes fs = 20 kHz when computing trough-to-peak and FWHM. If you record at a different rate, resample your waveforms before constructing `waveforms.csv`.
 
@@ -275,7 +280,7 @@ batch_size = 128) for `--epochs` epochs and writes a single Lightning
 checkpoint. No held-out validation, no KNN/MLP heads — the trainer is
 intentionally minimal. For paper-reproducing benchmarking (K-fold,
 holdout, balanced accuracy, W&B logging), use the companion
-[`HIPPIE-benchmarking-release`](https://github.com/JesusGF1/HIPPIE-benchmarking-release)
+[`hippie_benchmarking_release`](https://github.com/JesusGF1/hippie_benchmarking_release)
 repository.
 
 You can then either:
@@ -344,7 +349,7 @@ To prevent data leakage and improve generalization:
 2. **Reconstruction Consistency Loss**: Ensures consistent outputs with/without class labels
 3. **Embedding Warmup Schedule**: Gradually increases regularization over first 5 epochs
 
-**Regularization and evaluation details are described in the Methods section of the manuscript and in the [benchmarking repository](https://github.com/JesusGF1/HIPPIE-benchmarking-release).**
+**Regularization and evaluation details are described in the Methods section of the manuscript and in the [benchmarking repository](https://github.com/JesusGF1/hippie_benchmarking_release).**
 
 ## Module Reference
 
