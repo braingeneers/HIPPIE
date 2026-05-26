@@ -1,8 +1,9 @@
-# Variables
-DOCKER_USER ?= jesusgf23 #Your user name on Docker Hub
-IMAGE_NAME ?= $(DOCKER_USER)/hip_hip_hippie
+# Variables -- override DOCKER_USER on the command line or via a .env file:
+#   make build DOCKER_USER=your-dockerhub-user
+DOCKER_USER ?= your-dockerhub-user
+IMAGE_NAME ?= $(DOCKER_USER)/hippie
 TAG ?= latest
-CONTAINER_NAME ?= hip_hip_hippie
+CONTAINER_NAME ?= hippie
 
 # Build the Docker image
 build:

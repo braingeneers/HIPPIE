@@ -3,14 +3,10 @@
 Test script to verify all configurations match the expected schema.
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'hippie')))
-
-from multimodal_model import ExperimentConfigs
+from hippie.multimodal_model import ExperimentConfigs
 
 
-def test_config(name, expected_features):
+def _check_config(name, expected_features):
     """Test a single config against expected features."""
     config_func = getattr(ExperimentConfigs, name)
     config = config_func()
@@ -152,7 +148,7 @@ def main():
 
     results = {}
     for config_name, expected in configs_to_test.items():
-        results[config_name] = test_config(config_name, expected)
+        results[config_name] = _check_config(config_name, expected)
 
     print("\n" + "="*60)
     print("Summary")

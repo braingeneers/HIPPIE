@@ -95,38 +95,29 @@ Run the full ladder to show progression
 ### For Production:
 Use `class_decoder_source_bn_aug_reg` (post-rebuttal production default, +0.17 over prior default)
 
-## 📈 Expected Performance Order
+## 🚨 The asymmetric-CVAE fix
 
-### Easy Dataset (lissberger):
-```
-with_both_embeddings ≈ no_augmentations ≈ class_decoder_source_bn_aug_reg > with_batch_norm > baseline
-```
+Earlier configs that embed the class label in the **encoder** (e.g.
+`with_class`, `with_both_embeddings`, `no_fusion`) have a built-in
+train/test mismatch:
 
-### Hard Dataset (cellexplorer):
-```
-with_light_augmentations > class_decoder_source_bn_aug_reg >> baseline > ... > with_both_embeddings > no_fusion
-```
+1. The model trains WITH class labels in the encoder.
+2. At inference, class labels are masked to prevent leakage.
+3. Train/test distribution mismatch → performance collapse on harder
+   datasets with overlapping classes.
 
-## 🚨 Known Issues
-
-### Conditional Models Fail on Hard Datasets Without Regularization:
-- ❌ `with_class`: ~42% (cellexplorer)
-- ❌ `with_both_embeddings`: ~30%
-- ❌ `no_fusion`: ~15%
-
-**Solution**: Use `class_decoder_source_bn_aug_reg` — the encoder never sees the class label (no train/test mismatch), and decoder-side regularization further stabilizes training.
-
-### Why This Happens:
-1. Model trains WITH class labels
-2. Model tested WITHOUT class labels (masked to prevent leakage)
-3. Train/test mismatch → performance collapse
-
-**The asymmetric CVAE fix**: `encoder_uses_class_embedding=False` — the encoder is class-agnostic by construction, so there is no drift at test time regardless of masking.
+The production default `class_decoder_source_bn_aug_reg` sets
+`encoder_uses_class_embedding=False` — the encoder is class-agnostic by
+construction, so there is no drift at test time regardless of masking.
+Decoder-side regularization (class-embedding dropout + reconstruction
+consistency loss) further stabilizes training.
 
 ## 🎓 Key Takeaways
 
 1. **Progression matters**: Start simple (baseline), add complexity gradually
-2. **Dataset difficulty matters**: Easy vs hard datasets need different approaches
-3. **Decoder-only conditioning is superior**: Moving class embedding to decoder-only eliminates train/test mismatch
-4. **Augmentation is robust**: Works across dataset difficulties
-5. **Production default is `class_decoder_source_bn_aug_reg`**: +0.17 mean accuracy over prior default
+2. **Decoder-only conditioning is superior**: Moving class embedding to decoder-only eliminates the train/test mismatch above
+3. **Augmentation is robust**: Light augmentation works across dataset difficulties
+4. **Production default is `class_decoder_source_bn_aug_reg`**: the locked production config across paper datasets
+
+Paper-reproducing accuracy numbers and ablation results live in
+[`hippie_benchmarking_release`](https://github.com/braingeneers/hippie_benchmarking_release).

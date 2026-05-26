@@ -8,9 +8,9 @@ pretrained checkpoint from the HuggingFace Hub (``Jesusgf23/hippie``); pass
 Datasets must follow the canonical HIPPIE CSV format:
 
     <datasets-root>/<dataset_name>/
-        waveforms.csv     (N x T)        spike waveforms (any T; will be resampled to 50)
-        isi_dist.csv      (N x 100)      ISI histograms
-        acg.csv           (N x 100)      autocorrelograms (optional; zero-filled if missing)
+        waveforms.csv     (N x T)        spike waveforms (any T; resampled to 50)
+        isi_dist.csv      (N x T)        ISI histograms     (any T; resampled to 100; 1 ms bins, 0-100 ms)
+        acg.csv           (N x T)        autocorrelograms   (any T; resampled to 100; 1 ms bins, -100..+100 ms) -- optional, zero-filled if missing
         labels.csv        (N x ...)      ground-truth labels (last column is read)
 
 Usage:
@@ -28,7 +28,7 @@ Usage:
     # Only embed a subset of datasets
     python examples/extract_embeddings.py \
         --datasets-root ./datasets_hippie \
-        --datasets hausser_cell_type lissberger_labeled_cell_type
+        --datasets hausser_cell_type lisberger_labeled_cell_type
 """
 
 import argparse
@@ -43,20 +43,43 @@ from hippie.inference import HIPPIEClassifier, TECHNOLOGY_IDS
 
 
 # Recording technology per dataset (maps to TECHNOLOGY_IDS slots 0-3).
-# Edit this dict to add your own datasets.
+# Edit this dict to add your own datasets. Datasets shipped under
+# datasets_hippie/ are listed first; the rest are paper datasets that
+# users must wrangle themselves (see data_wrangling_scripts/README.md).
 DATASET_TECHNOLOGY = {
-    "hull_cell_type":                      "neuropixels",
-    "cellexplorer_cell_type":              "neuropixels",
+    # Shipped under datasets_hippie/
+    "toy":                                 "neuropixels",
     "hausser_cell_type":                   "neuropixels",
-    "lissberger_labeled_cell_type":        "silicon_probe",
+    "hull_cell_type":                      "neuropixels",
+    "lisberger_labeled_cell_type":        "silicon_probe",
+    "cellexplorer_cell_type":              "neuropixels",
+    "a1data_remove_undef":                 "silicon_probe",
+    "juxtacellular_mouse_s1_area":         "juxtacellular",
+    # MaxOne HD-MEA: the released checkpoint has no HD-MEA tech_id, so we
+    # use the default "neuropixels" slot (tech_id=0). For a truly unseen
+    # rig, calling get_embeddings(tech_id=0) is the safe default.
+    "mouse_organoids_cell_line":           "neuropixels",
+    "allen_scope_neuropixel_area_subset":  "neuropixels",
+    # Paper datasets not shipped -- wrangle from DANDI / IBL first
     "dandi_000041_cell_type":              "silicon_probe",
     "dandi_000473_cell_type":              "neuropixels",
     "dandi_000955_cell_type":              "silicon_probe",
-    "allen_scope_neuropixel_area_subset":  "neuropixels",
     "ibl_brainwide_good":                  "neuropixels",
-    "a1data_remove_undef":                 "silicon_probe",
-    "juxtacellular_mouse_s1_area":         "juxtacellular",
 }
+
+# Default --datasets list when none is passed: only the folders that
+# actually ship in this repo. Run with --datasets <name>... to embed
+# something you wrangled yourself.
+_SHIPPED_DATASETS = [
+    "hausser_cell_type",
+    "hull_cell_type",
+    "lisberger_labeled_cell_type",
+    "cellexplorer_cell_type",
+    "a1data_remove_undef",
+    "juxtacellular_mouse_s1_area",
+    "mouse_organoids_cell_line",
+    "allen_scope_neuropixel_area_subset",
+]
 
 WAVE_LEN = 50
 ISI_LEN  = 100
@@ -111,6 +134,13 @@ def embed_dataset(
 ):
     """Return (embeddings, labels, tech_ids, neuron_ids) for one dataset."""
     dst = os.path.join(datasets_root, dataset)
+    if not os.path.isdir(dst):
+        raise FileNotFoundError(
+            f"Dataset folder not found: {dst}\n"
+            f"  Expected: <datasets-root>/<dataset_name>/{{waveforms,isi_dist,acg,labels}}.csv\n"
+            f"  Either copy your CSVs into {dst}, or pass --datasets explicitly.\n"
+            f"  See data_wrangling_scripts/README.md for how to wrangle a paper dataset."
+        )
 
     wf  = pd.read_csv(os.path.join(dst, "waveforms.csv")).to_numpy().astype(np.float32)
     isi = pd.read_csv(os.path.join(dst, "isi_dist.csv")).to_numpy().astype(np.float32)
@@ -144,8 +174,8 @@ def main():
     p = argparse.ArgumentParser(description="Extract HIPPIE latent embeddings.")
     p.add_argument("--datasets-root", required=True,
                    help="Directory containing <dataset>/{waveforms,isi_dist,acg,labels}.csv subfolders")
-    p.add_argument("--datasets", nargs="+", default=list(DATASET_TECHNOLOGY.keys()),
-                   help="Subset of datasets to embed (default: all 11 paper datasets)")
+    p.add_argument("--datasets", nargs="+", default=_SHIPPED_DATASETS,
+                   help="Subset of datasets to embed. Default: datasets shipped under datasets_hippie/.")
     p.add_argument("--checkpoint", default=None,
                    help="Local .ckpt path. If omitted, the checkpoint is downloaded from HuggingFace Hub.")
     p.add_argument("--hf-repo", default="Jesusgf23/hippie",

@@ -46,12 +46,22 @@ def build_unconditioned_model(ckpt_path: str, backbone_base_width: int = 64):
     return model
 
 
-def build_model(ckpt_path: str):
+def build_model(ckpt_path: str, strict: bool = True):
     """Load a MultiModalCVAE from a Lightning checkpoint file.
 
-    Strips the Lightning "model." prefix from the state dict, infers
-    num_sources and num_classes automatically, and returns the model in
-    eval mode on CPU.
+    Strips the Lightning "model." prefix from the state dict and infers
+    ``z_dim``, ``num_sources``, and ``num_classes`` from the saved tensor
+    shapes so the same loader works for both the z=30 discriminative
+    checkpoint and the z=16 generative (Figure 6) checkpoint. Returns the
+    model in eval mode on CPU.
+
+    Args:
+        ckpt_path: Path to a Lightning .ckpt file.
+        strict: If True (default), require an exact shape/key match between
+            the checkpoint and the constructed model — surfaces silent
+            mismatches that would otherwise produce garbage embeddings.
+            Pass strict=False only when intentionally loading a partial
+            checkpoint (e.g. fine-tuning from a different architecture).
     """
     from .multimodal_model import MultiModalCVAE, ExperimentConfigs
 
@@ -62,11 +72,15 @@ def build_model(ckpt_path: str):
         for k, v in sd.items()
     }
 
+    # Infer latent dimensionality from the saved z_mean projection so a
+    # mismatched-z_dim checkpoint cannot load silently. Mirrors the inference
+    # done by build_unconditioned_model.
+    z_dim = sd["z_mean.weight"].shape[0]
     num_sources, num_classes = infer_model_dims(sd)
 
     model = MultiModalCVAE(
         modalities={"wave": 50, "isi": 100, "acg": 100},
-        z_dim=30,
+        z_dim=z_dim,
         num_sources=num_sources,
         num_classes=num_classes,
         num_super_regions=0,
@@ -74,6 +88,6 @@ def build_model(ckpt_path: str):
         config=ExperimentConfigs.class_decoder_source_bn_aug_reg(),
         backbone_base_width=64,
     )
-    model.load_state_dict(sd, strict=False)
+    model.load_state_dict(sd, strict=strict)
     model.eval()
     return model

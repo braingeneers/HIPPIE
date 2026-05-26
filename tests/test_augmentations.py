@@ -4,18 +4,14 @@ Test script to validate data augmentation implementation for HIPPIE.
 Tests augmentation functionality with synthetic data and creates visualization plots.
 """
 
-import sys
-import os
-sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), '..', 'hippie')))
-
 import numpy as np
 import matplotlib.pyplot as plt
 import torch
 from pathlib import Path
 
-from dataloading import MultiModalEphysDataset, none_safe_collate
-from multimodal_model import ExperimentConfigs
-from augmentations import AugmentedMultiModalEphysDataset, NeuralAugmentations
+from hippie.dataloading import MultiModalEphysDataset, none_safe_collate
+from hippie.multimodal_model import ExperimentConfigs
+from hippie.augmentations import AugmentedMultiModalEphysDataset, NeuralAugmentations
 
 
 def create_sample_data():

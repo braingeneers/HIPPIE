@@ -3,10 +3,90 @@
 from __future__ import annotations
 
 from pathlib import Path
-from typing import Optional, Union
+from typing import Iterable, Optional, Tuple, Union
 
 import numpy as np
 import torch
+
+
+# ----------------------------------------------------------------------
+# KNN k-selection (shared by hippie-cli predict and hippie_nwb_classify)
+# ----------------------------------------------------------------------
+
+def select_k_via_cv(
+    reference_embeddings: np.ndarray,
+    reference_labels: np.ndarray,
+    k_candidates: Iterable[int] = range(1, 21),
+    metric: str = "cosine",
+    scoring: str = "balanced_accuracy",
+) -> Tuple[int, dict]:
+    """Pick the best k for cosine-metric KNN via stratified CV on the reference set.
+
+    Mirrors the selection procedure used in
+    ``hippie_benchmarking_release/scripts/cross_dataset_script.py``:
+      * L2-normalize reference embeddings (no-op for cosine metric but kept
+        for byte-for-byte compatibility with the benchmark recipe).
+      * cv = min(5, n_classes).
+      * scoring = "balanced_accuracy".
+      * Try k = 1..20.
+      * Return the k that maximizes mean CV score (ties broken by smaller k).
+
+    Args:
+        reference_embeddings: (N, z_dim) labeled reference embeddings.
+        reference_labels:     (N,)       integer or string labels.
+        k_candidates:         which neighbour counts to consider.
+        metric:               sklearn KNN metric (default "cosine").
+        scoring:              sklearn CV scoring (default "balanced_accuracy").
+
+    Returns:
+        best_k, cv_scores -- where cv_scores is a {k: mean_score} dict for
+        the k values that were actually evaluated.
+
+    Raises:
+        ValueError: if there are fewer than 2 classes, or if every candidate
+        k is larger than the per-fold training set size.
+    """
+    from sklearn.model_selection import cross_val_score
+    from sklearn.neighbors import KNeighborsClassifier
+
+    labels = np.asarray(reference_labels)
+    n_samples = len(labels)
+    classes, class_counts = np.unique(labels, return_counts=True)
+    n_classes = len(classes)
+    if n_classes < 2:
+        raise ValueError(
+            f"k-selection needs >= 2 classes in the reference set; got {n_classes}. "
+            "Pass an explicit k (e.g. --k 5) to bypass CV selection."
+        )
+
+    cv = min(5, n_classes)
+    # StratifiedKFold (default for classifiers) requires >= cv samples in
+    # every class -- shrink cv to the smallest class size if needed.
+    cv = max(2, min(cv, int(class_counts.min())))
+    fold_train_size = n_samples - (n_samples // cv)
+
+    emb = np.asarray(reference_embeddings, dtype=np.float64)
+    emb_l2 = emb / np.maximum(np.linalg.norm(emb, axis=1, keepdims=True), 1e-12)
+
+    scores: dict = {}
+    for k in k_candidates:
+        if k > fold_train_size:
+            # KNN needs k neighbours available in each CV training fold.
+            continue
+        knn = KNeighborsClassifier(n_neighbors=k, metric=metric)
+        cv_score = cross_val_score(knn, emb_l2, labels, cv=cv, scoring=scoring)
+        scores[int(k)] = float(np.mean(cv_score))
+
+    if not scores:
+        raise ValueError(
+            f"Reference set too small ({n_samples} samples, cv={cv}) to evaluate any "
+            f"k in {list(k_candidates)}. Pass --k <int> to bypass CV selection."
+        )
+
+    # Ties broken by smaller k (max() with a key returning the score is stable;
+    # iteration is in insertion order so the first/smallest k wins on ties).
+    best_k = max(scores, key=lambda k: (scores[k], -k))
+    return best_k, scores
 
 
 # Recording-technology IDs that received gradients during pretraining.
@@ -97,8 +177,7 @@ class HIPPIEClassifier:
     ) -> np.ndarray:
         """Encode neurons and return latent z_mean embeddings.
 
-        Inputs must be preprocessed (see hippie_adapter.extract_features or
-        the README for the expected normalization):
+        Inputs must be preprocessed (see the README for the expected normalization):
           - wave: min-max normalized to [-1, 1], resampled to 50 points
           - isi:  log(x+1) transformed, min-max normalized to [-1, 1], 100 bins
           - acg:  min-max normalized to [-1, 1], 100 bins

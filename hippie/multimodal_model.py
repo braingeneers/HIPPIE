@@ -1,11 +1,16 @@
+import logging
 from dataclasses import dataclass
 from typing import Dict, List, Optional
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
 import pytorch_lightning as pl
+
 from .backbones import ResNet18Enc, ResNet18Dec
+
+logger = logging.getLogger(__name__)
 
 @dataclass
 class CVAEConfig:
@@ -348,42 +353,38 @@ class ExperimentConfigs:
 
     @staticmethod
     def class_decoder_source_bn_aug_reg():
-        """Ladder rung 8 AND the post-rebuttal production default for the 11-dataset benchmark.
+        """Ladder rung 8 and the production default for the 11-dataset benchmark.
 
-        Full design rationale: docs/production_default_rationale.md
+        Why this is the production configuration:
 
-        Short version of why this is the production config:
+        1. Class-agnostic encoder (encoder_uses_class_embedding=False): the encoder path
+           contains no class embedding, so there is no train/test mismatch when class labels
+           are unavailable at inference. An earlier default put the class embedding into the
+           encoder and relied on regularizers to absorb the mismatch; under 5-fold
+           cross-validation on the two tuning datasets that approach reached mean balanced
+           accuracy 0.468 (cellexplorer 0.460, hausser 0.475), whereas this configuration
+           reaches 0.635 (cellexplorer 0.557, hausser 0.713), a +0.17 mean improvement from
+           moving class conditioning to the decoder while keeping the same regularizers.
 
-        1. Drift fix (rung 3 → 4 on the ladder): encoder_uses_class_embedding=False makes the
-           encoder path class-agnostic by construction. The previous default (full_architecture,
-           formerly augmentation_ablation) put the class embedding into the encoder and fought
-           the resulting train/test mismatch with regularizers; at 5-fold on the two tuning
-           datasets post-leakage-fix, that approach produced mean balanced accuracy of 0.468
-           (cellexplorer 0.460, hausser 0.475). This config hits 0.635 (cellexplorer 0.557,
-           hausser 0.713) — a +0.17 mean-accuracy improvement just from moving class conditioning
-           to the decoder and adding back the same regularizers.
-
-        2. Hausser is the representative tuning dataset. Dataset-level cosine distance analysis
-           (analysis/rebuttal/cross_dataset_similarity.py) shows hausser sits 2nd-closest to the
-           11-dataset center (mean distance 0.475) while cellexplorer is 9th of 11 (0.707) — a
-           mild outlier. On pairwise comparisons, hausser is closer to 9 out of 9 other datasets
-           than cellexplorer is. This config's +0.069 hausser advantage over the simpler rung 5
-           (class_decoder_source_bn) is therefore more likely to generalize to the remaining 9
-           datasets than rung 5's +0.044 cellexplorer advantage is.
+        2. Hausser is the representative tuning dataset: a dataset-level cosine-distance
+           analysis places hausser 2nd-closest to the 11-dataset center (mean distance 0.475)
+           while cellexplorer is a mild outlier (9th of 11, 0.707). This configuration's
+           +0.069 hausser advantage over the simpler class_decoder_source_bn (rung 5) is
+           therefore more likely to generalize than rung 5's +0.044 cellexplorer advantage.
 
         3. The decoder-side regularization (class_embedding_dropout=0.3,
-           reconstruction_consistency_weight=0.15, embedding_warmup_epochs=5) is the same set of
-           values the original paper's augmentation_ablation used — we did not refit them.
-           Because encoder_uses_class_embedding=False, these regularizers now operate entirely on
-           the decoder path: the dropout regularizes the decoder's class-embedding input, and the
-           consistency loss pushes the decoder to produce similar reconstructions with and
-           without the class embedding. The downstream KNN probe only touches the encoder's z,
-           so these losses regularize without affecting the evaluation path directly.
+           reconstruction_consistency_weight=0.15, embedding_warmup_epochs=5) reuses the
+           original values without refitting. Because encoder_uses_class_embedding=False,
+           these regularizers act entirely on the decoder path: the dropout regularizes the
+           decoder's class-embedding input, and the consistency loss pushes the decoder to
+           produce similar reconstructions with and without the class embedding. The
+           downstream KNN probe only touches the encoder's z, so they regularize without
+           affecting the evaluation path.
 
-        Alternative: class_decoder_source_bn (rung 5) is the minimal variant without augmentation
-        or regularization. It is strictly better on cellexplorer and slightly faster to train
-        (10.0 vs 13.4 min/fold). See the design doc for the full comparison and the reasoning
-        behind selecting rung 8 over rung 5 despite rung 5 being simpler."""
+        Alternative: class_decoder_source_bn (rung 5) is the minimal variant without
+        augmentation or regularization. It is strictly better on cellexplorer and slightly
+        faster to train (10.0 vs 13.4 min/fold); rung 8 is selected for its better expected
+        generalization (see point 2)."""
         return CVAEConfig(
             use_source_embedding=True,
             use_class_embedding=True,
@@ -751,8 +752,11 @@ class MultiModalCVAETrainModule(pl.LightningModule):
             try:
                 mse_losses[mod_name] = F.mse_loss(data_dict[mod_name], decoded_dict[mod_name])
             except Exception as e:
-                print(f"Error computing MSE loss for {mod_name}: {e}")
-                print(f"Shapes are {data_dict[mod_name].shape} and {decoded_dict[mod_name].shape}")
+                logger.error(
+                    "MSE loss failed for '%s': %s; shapes %s vs %s",
+                    mod_name, e, data_dict[mod_name].shape, decoded_dict[mod_name].shape,
+                )
+                raise
 
         mse_loss = sum(self.modality_weights[mod_name] * mse_losses[mod_name] 
                       for mod_name in self.modalities.keys())
@@ -985,7 +989,7 @@ class MultiModalCVAETrainModule(pl.LightningModule):
     def on_validation_epoch_end(self):
         if self.val_loss:
             avg_loss = sum(self.val_loss) / len(self.val_loss)
-            print(f"Average validation loss is {avg_loss:.2f}")
+            logger.info("Average validation loss is %.2f", avg_loss)
             if self._val_component_buffer:
                 self.val_epoch_history.append({
                     "epoch": int(self.current_epoch),
@@ -1000,7 +1004,7 @@ class MultiModalCVAETrainModule(pl.LightningModule):
     def on_train_epoch_end(self):
         if self.train_loss:
             avg_loss = sum(self.train_loss) / len(self.train_loss)
-            print(f"Average training loss is {avg_loss:.2f}")
+            logger.info("Average training loss is %.2f", avg_loss)
             if self._train_component_buffer:
                 self.train_epoch_history.append({
                     "epoch": int(self.current_epoch),

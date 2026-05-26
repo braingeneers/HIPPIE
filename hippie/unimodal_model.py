@@ -1,3 +1,5 @@
+import logging
+
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -7,6 +9,8 @@ from .backbones import ResNet18Enc, ResNet18Dec
 from pytorch_lightning.utilities import grad_norm
 from torch.nn.functional import normalize
 from .optimizers import AdamWScheduleFree
+
+logger = logging.getLogger(__name__)
 
 
 class hippieUnimodalCVAE(nn.Module):
@@ -140,12 +144,12 @@ class hippieUnimodalEmbeddingModelCVAE(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         avg_loss = sum(self.val_loss) / len(self.val_loss)
-        print(f"Average validation loss is {avg_loss:.2f}")
+        logger.info("Average validation loss is %.2f", avg_loss)
         self.val_loss = []
 
     def on_train_epoch_end(self):
         avg_loss = sum(self.train_loss) / len(self.train_loss)
-        print(f"Average training loss is {avg_loss:.2f}")
+        logger.info("Average training loss is %.2f", avg_loss)
         self.train_loss = []
 
     def configure_optimizers(self):
@@ -292,9 +296,11 @@ class MultiModalCVAETrainModule(pl.LightningModule):
             try:
                 mse_losses[mod_name] = F.mse_loss(data_dict[mod_name], decoded_dict[mod_name])
             except Exception as e:
-                print(f"Error computing MSE loss for {mod_name}: {e}")
-                print(f"Shapes are {data_dict[mod_name].shape} and {decoded_dict[mod_name].shape}")
-                breakpoint()
+                logger.error(
+                    "MSE loss failed for '%s': %s; shapes %s vs %s",
+                    mod_name, e, data_dict[mod_name].shape, decoded_dict[mod_name].shape,
+                )
+                raise
 
         mse_loss = sum(self.modality_weights[mod_name] * mse_losses[mod_name] 
                       for mod_name in self.modalities.keys())
@@ -367,12 +373,12 @@ class MultiModalCVAETrainModule(pl.LightningModule):
 
     def on_validation_epoch_end(self):
         avg_loss = sum(self.val_loss) / len(self.val_loss)
-        print(f"Average validation loss is {avg_loss:.2f}")
+        logger.info("Average validation loss is %.2f", avg_loss)
         self.val_loss = []
         
     def on_train_epoch_end(self):
         avg_loss = sum(self.train_loss) / len(self.train_loss)
-        print(f"Average training loss is {avg_loss:.2f}")
+        logger.info("Average training loss is %.2f", avg_loss)
         self.train_loss = []
 
     def configure_optimizers(self):
