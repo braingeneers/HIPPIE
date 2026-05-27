@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "hippie"
 version = "0.1.0"
-description = "A package to perform classification and clustering of neurons based on HD-MEA recordings"
+description = "Generative model for electrophysiological analysis across species, technologies, and modalities — classifies and clusters neurons from extracellular recordings (Neuropixels, silicon probes, juxtacellular, HD-MEA)."
 readme = "README.md"
 requires-python = ">=3.9"
 license = {file = "LICENSE"}
@@ -15,29 +15,61 @@ authors = [
 maintainers = [
     {name = "Jesus Gonzalez Ferrer", email = "jgonz373@ucsc.edu"}
 ]
-keywords = ["neuroscience", "HD-MEA", "clustering", "classification", "neurons"]
+keywords = ["neuroscience", "electrophysiology", "Neuropixels", "HD-MEA", "generative-model", "VAE", "clustering", "classification", "neurons"]
 classifiers = [
     "Development Status :: 3 - Alpha",
     "Intended Audience :: Science/Research",
     "License :: OSI Approved :: BSD License",
     "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
     "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Topic :: Scientific/Engineering :: Bio-Informatics",
     "Topic :: Scientific/Engineering :: Artificial Intelligence",
 ]
 dependencies = [
-    "pandas",
-    "numpy",
-    "matplotlib",
-    "scikit-learn",
-    "torch",
-    "pytorch-lightning",
-    "wandb",
-    "seaborn",
+    "pandas>=1.5",
+    "numpy>=1.23",
+    "scipy>=1.9",
+    "matplotlib>=3.5",
+    "scikit-learn>=1.1",
+    "torch>=2.0",
+    "pytorch-lightning>=2.1",
+    "huggingface-hub>=0.22",
+    "seaborn>=0.12",
 ]
 
 [project.optional-dependencies]
+# Visualization helpers used by hippie.inference.HIPPIEClassifier.{umap_reduce, hdbscan_cluster}.
+viz = [
+    "umap-learn>=0.5.4",
+    "hdbscan>=0.8.33",
+]
+# NWB / SpikeInterface stack used by hippie_nwb_classify.py.
+nwb = [
+    "pynwb>=3.1.2",
+    "h5py>=3.10",
+    "pyarrow>=12",
+    "joblib",
+    "spikeinterface",
+]
+# Wrangling extras: deps needed by specific notebooks under
+# data_wrangling_scripts/. Install only the ones you need.
+ibl = [
+    "ONE-api>=2.0",
+    "iblatlas>=0.5",
+]
+# Allen Institute Visual Coding ecephys session download (used by
+# data_wrangling_scripts/allen_nwb_to_csv_converter.ipynb). Pulls in PyTables;
+# on macOS a Python 3.10+ environment with HDF5 headers is recommended
+# (the Py3.9 macOS PyTables build is no longer supported upstream).
+allen = [
+    "allensdk>=2.13",
+]
+# Experiment-tracking; off by default in the user-facing trainer.
+wandb = [
+    "wandb",
+]
 dev = [
     "pytest>=7.0.0",
     "black>=22.1.0",
@@ -63,3 +95,10 @@ include = '\.pyi?$'
 [tool.isort]
 profile = "black"
 line_length = 88
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+markers = [
+    "network: tests that require internet access (e.g., HuggingFace Hub downloads)",
+]
+addopts = "-m 'not network'"

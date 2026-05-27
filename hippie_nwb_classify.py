@@ -42,8 +42,11 @@ python hippie_nwb_classify.py session.nwb --features-only --output session_featu
 
 Notes
 -----
-- The checkpoint and training embeddings come from a previous run of
-  cross_dataset_script.py (outputs/…/train_embeddings.csv).
+- The checkpoint can be the public pretrained HIPPIE checkpoint from
+  HuggingFace Hub (downloaded automatically by hippie.inference) or one
+  produced by `python scripts/train.py`. The training-set embeddings
+  CSV is the labeled reference set you want to classify against (see
+  `hippie-cli embed` to generate it).
 - --num-sources must match the value used during training (it determines the
   source_embedding table size; a mismatch will raise an error on load).
 - --source-id controls which source embedding is injected at inference time.
@@ -55,19 +58,16 @@ import os
 import argparse
 import warnings
 from pathlib import Path
+from typing import Optional, Union
 
 import numpy as np
 import pandas as pd
 from joblib import Parallel, delayed
 
-# ── locate the hippie package ────────────────────────────────────────────────
-_HERE = Path(__file__).resolve().parent
-sys.path.insert(0, str(_HERE / "hippie"))
-
 import torch
 from torch.utils.data import DataLoader
-from dataloading import MultiModalEphysDataset, none_safe_collate
-from multimodal_model import (
+from hippie.dataloading import MultiModalEphysDataset, none_safe_collate
+from hippie.multimodal_model import (
     CVAEConfig,
     ExperimentConfigs,
     MultiModalCVAE,
@@ -352,7 +352,7 @@ def compute_autocorrelograms(
 # ═══════════════════════════════════════════════════════════════════════════════
 
 #: Modality sizes must match what the checkpoint was trained with.
-MODALITIES = {"wave": 50, "isi": 100, "acg": 200}
+MODALITIES = {"wave": 50, "isi": 100, "acg": 100}
 
 
 def load_model(
@@ -429,8 +429,8 @@ def extract_embeddings(
     never relies on them; symmetric configs use class_labels=None as a safe
     test-time path).
 
-    Embeddings are row-wise z-normalised to match the normalisation applied
-    inside cross_dataset_script.py.
+    Embeddings are row-wise z-normalised to match the normalisation used
+    during training (the same transform applied by hippie.inference).
     """
     n = len(waveforms)
     # Source ID is broadcast to every unit; class label = 0 (masked below anyway)
@@ -480,24 +480,32 @@ def extract_embeddings(
 def knn_classify(
     train_embeddings_csv: str,
     query_embeddings: np.ndarray,
-    k: int = 5,
+    k: Union[int, str] = 10,
 ) -> tuple:
     """KNN classification against pre-saved training-set embeddings.
 
     Parameters
     ----------
-    train_embeddings_csv : CSV produced by cross_dataset_script.py
-        (``outputs/…/train_embeddings.csv``).  Must have a ``label`` column;
-        all other columns are treated as embedding dimensions.
+    train_embeddings_csv : CSV of labeled reference embeddings. Must have
+        a ``label`` column; all other columns are treated as embedding
+        dimensions. Convert a `hippie-cli embed` .npz to this format by
+        loading `embeddings` and `labels` and saving as CSV.
     query_embeddings     : (n_query, z_dim) float array.
-    k                    : Number of neighbours.
+    k                    : Number of neighbours. Default 10. Pass "auto" to
+        select k via 5-fold cross-validation on the reference set with
+        balanced-accuracy scoring over k=1..20 -- matching the procedure
+        in hippie_benchmarking_release.
 
     Returns
     -------
-    predicted : (n_query,) string array of predicted class names.
-    confidence: (n_query,) float — fraction of neighbours that agree.
+    predicted   : (n_query,)          string array of predicted class names.
+    probas      : (n_query, n_classes) float array of per-class probabilities.
+    classes     : (n_classes,)        string array of class labels (column order of `probas`).
+    k_used      : int                  the neighbour count actually used.
     """
     from sklearn.neighbors import KNeighborsClassifier
+
+    from hippie.inference import select_k_via_cv
 
     df = pd.read_csv(train_embeddings_csv)
     label_col = "label"
@@ -517,14 +525,22 @@ def knn_classify(
             f"Check that --z-dim matches the training run."
         )
 
+    if k == "auto":
+        k, scores = select_k_via_cv(train_emb, train_labels)
+        print(f"Selected best k = {k} via 5-fold CV on the reference set "
+              f"(balanced_acc = {scores[k]:.4f}).")
+    else:
+        k = int(k)
+        print(f"Using k = {k} (pass -k auto to enable CV-based selection).")
+
     knn = KNeighborsClassifier(n_neighbors=k, metric="cosine")
     knn.fit(train_emb, train_labels)
 
     predicted = knn.predict(query_embeddings)
     probas = knn.predict_proba(query_embeddings)
-    confidence = probas.max(axis=1)
+    classes = knn.classes_
 
-    return predicted, confidence
+    return predicted, probas, classes, k
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -594,11 +610,12 @@ def run_pipeline(args: argparse.Namespace) -> pd.DataFrame:
     print(f"Embeddings: {embeddings.shape}")
 
     # ── 5. KNN classification ───────────────────────────────────────────────
-    predicted, confidence = knn_classify(
+    predicted, probas, classes, k_used = knn_classify(
         args.train_embeddings,
         embeddings,
         k=args.k,
     )
+    confidence = probas.max(axis=1)
 
     # ── 6. assemble output ──────────────────────────────────────────────────
     n_spikes = [len(st) for st in spike_times_ms]
@@ -611,9 +628,13 @@ def run_pipeline(args: argparse.Namespace) -> pd.DataFrame:
         "unit_id":          unit_ids,
         "predicted_class":  predicted,
         "knn_confidence":   np.round(confidence, 4),
+        "k_used":           k_used,
         "n_spikes":         n_spikes,
         "firing_rate_hz":   np.round(firing_rates, 3),
     })
+    # Per-class probability columns ("confidence matrix").
+    for j, cls in enumerate(classes):
+        out[f"prob_{cls}"] = np.round(probas[:, j], 4)
     for dim in range(embeddings.shape[1]):
         out[f"emb_{dim}"] = np.round(embeddings[:, dim], 6)
 
@@ -622,28 +643,7 @@ def run_pipeline(args: argparse.Namespace) -> pd.DataFrame:
     print(out[["unit_id", "predicted_class", "knn_confidence",
                "n_spikes", "firing_rate_hz"]].to_string(index=False))
 
-    # ── 7. optional confusion matrix (when ground truth is available) ───────
-    if args.ground_truth:
-        _print_accuracy(out, args.ground_truth)
-
     return out
-
-
-def _print_accuracy(results: pd.DataFrame, gt_csv: str):
-    """If a ground-truth CSV with columns [unit_id, label] is provided,
-    print balanced accuracy and per-class breakdown."""
-    from sklearn.metrics import balanced_accuracy_score, classification_report
-
-    gt = pd.read_csv(gt_csv)
-    merged = results.merge(gt.rename(columns={"label": "true_label"}),
-                           on="unit_id", how="inner")
-    if merged.empty:
-        print("Warning: No unit_id overlap between results and ground truth.")
-        return
-
-    ba = balanced_accuracy_score(merged["true_label"], merged["predicted_class"])
-    print(f"\nBalanced accuracy (n={len(merged)}): {ba:.3f}")
-    print(classification_report(merged["true_label"], merged["predicted_class"]))
 
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -688,12 +688,14 @@ def _build_parser() -> argparse.ArgumentParser:
     g_model = p.add_argument_group("Model (required unless --features-only)")
     g_model.add_argument(
         "--checkpoint",
-        help="Path to PyTorch Lightning .ckpt file from cross_dataset_script.py.",
+        help="Path to a PyTorch Lightning .ckpt file (from scripts/train.py "
+             "or downloaded from the HuggingFace Hub).",
     )
     g_model.add_argument(
         "--train-embeddings", dest="train_embeddings",
-        help="CSV of training-set embeddings "
-             "(outputs/…/train_embeddings.csv from cross_dataset_script.py).",
+        help="CSV of labeled reference embeddings used by the KNN classifier. "
+             "Generate with `hippie-cli embed` + a labeled reference dataset, "
+             "then convert the .npz to CSV with columns: <z_dim> + 'label'.",
     )
     g_model.add_argument(
         "--config", default="class_decoder_source_bn_aug_reg",
@@ -701,17 +703,17 @@ def _build_parser() -> argparse.ArgumentParser:
              "(default: class_decoder_source_bn_aug_reg).",
     )
     g_model.add_argument(
-        "--z-dim", dest="z_dim", type=int, default=20,
-        help="Latent dimension — must match training run (default: 20).",
+        "--z-dim", dest="z_dim", type=int, default=30,
+        help="Latent dimension — must match training run (default: 30, matches the released checkpoint).",
     )
     g_model.add_argument(
-        "--num-sources", dest="num_sources", type=int, default=2,
-        help="Number of source datasets the model was trained on (default: 2). "
+        "--num-sources", dest="num_sources", type=int, default=4,
+        help="Number of source datasets the model was trained on (default: 4). "
              "Sets the source_embedding table size — must match training.",
     )
     g_model.add_argument(
-        "--num-classes", dest="num_classes", type=int, default=5,
-        help="Number of cell-type classes (default: 5). "
+        "--num-classes", dest="num_classes", type=int, default=4,
+        help="Number of cell-type classes (default: 4). "
              "Ignored when --class-names is supplied.",
     )
     g_model.add_argument(
@@ -729,15 +731,11 @@ def _build_parser() -> argparse.ArgumentParser:
     # ── KNN ──────────────────────────────────────────────────────────────────
     g_knn = p.add_argument_group("KNN classifier")
     g_knn.add_argument(
-        "-k", type=int, default=5,
-        help="Number of KNN neighbours (default: 5).",
-    )
-
-    # ── evaluation ───────────────────────────────────────────────────────────
-    g_eval = p.add_argument_group("Evaluation (optional)")
-    g_eval.add_argument(
-        "--ground-truth", dest="ground_truth", default=None,
-        help="CSV with columns [unit_id, label] for computing accuracy metrics.",
+        "-k", default="10",
+        help="Number of KNN neighbours. Default 10. Pass `-k auto` to select "
+             "k via 5-fold cross-validation on the reference set with "
+             "balanced-accuracy scoring over k=1..20 -- matching the "
+             "procedure in hippie_benchmarking_release.",
     )
 
     # ── output ───────────────────────────────────────────────────────────────

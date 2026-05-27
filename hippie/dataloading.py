@@ -1,9 +1,13 @@
+import logging
+
 import torch
 import torch.nn.functional as F
 from torch.utils.data import Dataset, DataLoader
 import numpy as np
 import random
 import torch.utils.data
+
+logger = logging.getLogger(__name__)
 
 
 def extend_sequence_interpolation(tensor, target_size):
@@ -51,10 +55,10 @@ class EphysDatasetLabeled(Dataset):
         isi_dist = torch.log(isi_dist + 1)
 
         if self.normalize:
-            min_val = waveform.min()
-            max_val = waveform.max()
-            waveform = (waveform - min_val) / (max_val - min_val) * 2 - 1
-            isi_dist = (isi_dist - isi_dist.mean()) / isi_dist.std()
+            wf_min, wf_max = waveform.min(), waveform.max()
+            waveform = (waveform - wf_min) / (wf_max - wf_min + 1e-8) * 2 - 1
+            isi_min, isi_max = isi_dist.min(), isi_dist.max()
+            isi_dist = (isi_dist - isi_min) / (isi_max - isi_min + 1e-8) * 2 - 1
 
         waveform = extend_sequence_interpolation(waveform.view(1, 1, -1), 50).view(1, -1)
         isi_dist = extend_sequence_interpolation(isi_dist.view(1, 1, -1), 100).view(1, -1)
@@ -86,7 +90,9 @@ class MultiModalEphysDataset(Dataset):
         self.labels = np.array(labels)
 
         if mode != "multi" and mode not in self.modalities:
-            print(f"Mode '{mode}' must be 'multi' or one of: {list(self.modalities.keys())}")
+            raise ValueError(
+                f"Mode '{mode}' must be 'multi' or one of: {list(self.modalities.keys())}"
+            )
         self.mode = mode
 
         n_samples = len(self.labels)
@@ -125,13 +131,13 @@ class MultiModalEphysDataset(Dataset):
             for mod_name, data in self.modalities.items():
                 result[mod_name] = self.process_modality(mod_name, data, idx)
                 if torch.isnan(result[mod_name]).any() or torch.isinf(result[mod_name]).any():
-                    print(f"NaN/Inf in sample {idx}, modality '{mod_name}'")
+                    logger.warning("NaN/Inf in sample %d, modality '%s' -- dropping", idx, mod_name)
                     return None
             return result, label
         else:
             tensor = self.process_modality(self.mode, self.modalities[self.mode], idx)
             if torch.isnan(tensor).any() or torch.isinf(tensor).any():
-                print(f"NaN/Inf in sample {idx}, modality '{self.mode}'")
+                logger.warning("NaN/Inf in sample %d, modality '%s' -- dropping", idx, self.mode)
                 return None
             return tensor, label
 
