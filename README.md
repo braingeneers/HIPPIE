@@ -129,7 +129,7 @@ These are the paper datasets that ship in this repo under `datasets_hippie/`. `S
 | Hull (mouse cerebellum) | `hull_cell_type` | C4 database — Beau et al. 2024 | GoC, MFB, MLI, PkC_ss, PkC_cs | 206 |
 | Lisberger (macaque cerebellum) | `lisberger_labeled_cell_type` | C4 database — Beau et al. 2024 | GoC, MFB, MLI, PkC_ss, PkC_cs | 1,152 |
 | Lakunina Mouse A1 | `a1data_remove_undef` | Silicon probe | EXC, PV, SOM | 285 |
-| Juxtacellular Mouse S1 | `juxtacellular_mouse_s1_area` | Juxtacellular micropipette | E/FS × layer + SOM (5 cell types) | 223 |
+| Juxtacellular Mouse S1 | `juxtacellular_mouse_s1_area` | Juxtacellular micropipette | E/FS × layer + SOM (5 cell types) | 224 |
 | CellExplorer (mouse VC + HPC) | `cellexplorer_cell_type` | Neuropixels 1.0 | PV, SST, Pyramidal, Axo-axonic, Juxtacellular, VIP, VGAT | 430 |
 | Allen Visual Coding (labeled subset) | `allen_scope_neuropixel_area_subset` | Neuropixels | 19 brain regions | (subset of the 82,094 full session set) |
 
@@ -137,7 +137,7 @@ Paper datasets **not** shipped in this repo (download separately to reproduce th
 
 ## Model Configurations
 
-HIPPIE provides 10 predefined configurations for systematic ablation studies:
+HIPPIE provides 11 predefined configurations for systematic ablation studies:
 
 | Configuration | Source Emb | Class Emb | Fusion | Batch Norm | Augmentation | Regularization |
 |---------------|------------|-----------|--------|------------|--------------|----------------|
@@ -176,6 +176,25 @@ first run), embeds the 20 toy units into the locked 30-D latent space,
 and writes a single `.npz` with keys `embeddings`, `labels`,
 `dataset_ids`, `technology_ids`, and `neuron_ids`. On a laptop CPU this
 completes in well under a minute.
+
+### Tutorial notebooks
+
+Two end-to-end walkthroughs live in `examples/` (install the plotting extra first
+with `pip install -e ".[viz]"`):
+
+- [`cross_dataset_tutorial.ipynb`](examples/cross_dataset_tutorial.ipynb) —
+  **using the pretrained checkpoint**: load weights from the Hub, preprocess and
+  embed a dataset, classify cell types with a KNN probe (balanced accuracy),
+  visualize with UMAP, and transfer across species in the shared latent space.
+- [`train_on_your_own_data.ipynb`](examples/train_on_your_own_data.ipynb) —
+  **training from scratch**: train a HIPPIE model on one dataset in the canonical
+  CSV layout (mirroring `scripts/train.py`), then reload it and evaluate.
+
+**Running in VS Code:** open the `HIPPIE` folder as your workspace and pick the
+`hippie_venv` interpreter as the kernel (top-right "Select Kernel"). Avoid the
+generic "Python 3 (ipykernel)" kernel, which may point at an unrelated environment
+without PyTorch. The notebooks locate `datasets_hippie/` on their own, so they run
+regardless of the kernel's working directory.
 
 ### Embed one or more paper datasets
 
