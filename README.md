@@ -6,7 +6,7 @@
 
 **HIPPIE** is a generative model for electrophysiological analysis across species, technologies, and modalities. It implements parallel Conditional Variational Autoencoders (CVAEs) that jointly embed three modalities — waveforms, ISI distributions, and autocorrelograms — into a shared 30-D latent space. The same model supports neuron classification, unsupervised clustering, cross-species/cross-technology transfer, and generative use cases (counterfactual decoding, cross-modal imputation).
 
-The framework has been validated on recordings from Neuropixels (1.0/2.0), silicon probes (incl. NeuroNexus 32-channel), juxtacellular micropipettes, and MaxOne HD-MEAs, across mouse, rat, and macaque, spanning cerebellum, neocortex, and cortical organoids.
+The framework has been validated on recordings from Neuropixels (1.0/2.0), silicon probes (incl. NeuroNexus 32-channel), and juxtacellular micropipettes, across mouse, rat, and macaque, spanning cerebellum and neocortex.
 
 ## Overview
 
@@ -98,7 +98,7 @@ is treated as a header and discarded, so column names are free.
 | `acg.csv`       | (N, 201) — bin width 1 ms, range −100…+100 ms, center bin = 0 | no (falls back to bimodal mode with zero ACG) | spike-pair counts |
 | `labels.csv`    | (N, ≥1) — cell-type label in the **last** column; also accepts `celltypes.csv` | no (required for supervised training / KNN heads, not for embedding extraction) | string |
 
-Optional per-dataset extras (`metadata.csv`, `area.csv`, `super_regions.csv`, `cell_line.csv`) are recognized by some training paths but ignored by the embedding API.
+Optional per-dataset extras (`metadata.csv`, `area.csv`, `super_regions.csv`) are recognized by some training paths but ignored by the embedding API.
 
 Normalization is applied internally — do **not** pre-normalize your inputs:
 - waveform: min-max to [−1, 1] per row
@@ -132,7 +132,6 @@ These are the paper datasets that ship in this repo under `datasets_hippie/`. `S
 | Juxtacellular Mouse S1 | `juxtacellular_mouse_s1_area` | Juxtacellular micropipette | E/FS × layer + SOM (5 cell types) | 223 |
 | CellExplorer (mouse VC + HPC) | `cellexplorer_cell_type` | Neuropixels 1.0 | PV, SST, Pyramidal, Axo-axonic, Juxtacellular, VIP, VGAT | 430 |
 | Allen Visual Coding (labeled subset) | `allen_scope_neuropixel_area_subset` | Neuropixels | 19 brain regions | (subset of the 82,094 full session set) |
-| Braingeneers Mouse Organoid | `mouse_organoids_cell_line` | MaxOne HD-MEA | dorsal / ventral *(the paper additionally performs unsupervised K-means across the 3 PSC lines BRUCE4, KH2, ES-E14TG2a)* | 4,745 |
 
 Paper datasets **not** shipped in this repo (download separately to reproduce those figures): Watson rat frontal cortex (DANDI 000041, 64-site silicon probes), Ramachandran rat S1 (NeuroNexus 32-ch), Calvigioni mouse PFC (Neuropixel), IBL Brain Wide Map, and the full 82,094-unit Allen Visual Coding session set. See `data_wrangling_scripts/README.md` for download + conversion recipes.
 
@@ -249,7 +248,7 @@ For NWB / ACQM / DANDI / IBL / Allen-SDK sources, use the
 |---|---|
 | Allen Institute Visual Coding (Allen SDK) | [`allen_nwb_to_csv_converter.ipynb`](data_wrangling_scripts/allen_nwb_to_csv_converter.ipynb) |
 | IBL Brain Wide Map (ONE API) | [`ibl_one_to_csv_converter.ipynb`](data_wrangling_scripts/ibl_one_to_csv_converter.ipynb) |
-| Braingeneers ACQM `.zip` (MaxOne HD-MEA) | [`acqm_to_csv_converter.ipynb`](data_wrangling_scripts/acqm_to_csv_converter.ipynb) |
+| ACQM `.zip` (HD-MEA) | [`acqm_to_csv_converter.ipynb`](data_wrangling_scripts/acqm_to_csv_converter.ipynb) |
 | DANDI NWB (Watson, Calvigioni, Ramachandran, …) | Allen notebook template — swap the download cell for `dandi download` |
 
 ### Troubleshooting
@@ -381,7 +380,7 @@ To prevent data leakage and improve generalization:
 - **`neurocurator.py`**: Core `Neurocurator` class — loads ACQM zips or NWB files, computes mean waveforms, ISI distributions, autocorrelograms, and per-unit shape features
 - **`allen_nwb_to_csv_converter.ipynb`**: Convert one Allen Institute Visual Coding session (Allen SDK) to HIPPIE CSVs; also a template for DANDI NWB files
 - **`ibl_one_to_csv_converter.ipynb`**: Convert one IBL Brain Wide Map insertion (ONE API, public Open Alyx mirror) to HIPPIE CSVs
-- **`acqm_to_csv_converter.ipynb`**: Convert Braingeneers ACQM `.zip` recordings to HIPPIE CSVs
+- **`acqm_to_csv_converter.ipynb`**: Convert ACQM `.zip` HD-MEA recordings to HIPPIE CSVs
 
 ## Architecture Details
 

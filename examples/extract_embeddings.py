@@ -55,10 +55,6 @@ DATASET_TECHNOLOGY = {
     "cellexplorer_cell_type":              "neuropixels",
     "a1data_remove_undef":                 "silicon_probe",
     "juxtacellular_mouse_s1_area":         "juxtacellular",
-    # MaxOne HD-MEA: the released checkpoint has no HD-MEA tech_id, so we
-    # use the default "neuropixels" slot (tech_id=0). For a truly unseen
-    # rig, calling get_embeddings(tech_id=0) is the safe default.
-    "mouse_organoids_cell_line":           "neuropixels",
     "allen_scope_neuropixel_area_subset":  "neuropixels",
     # Paper datasets not shipped -- wrangle from DANDI / IBL first
     "dandi_000041_cell_type":              "silicon_probe",
@@ -77,7 +73,6 @@ _SHIPPED_DATASETS = [
     "cellexplorer_cell_type",
     "a1data_remove_undef",
     "juxtacellular_mouse_s1_area",
-    "mouse_organoids_cell_line",
     "allen_scope_neuropixel_area_subset",
 ]
 

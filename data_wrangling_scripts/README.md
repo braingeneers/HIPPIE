@@ -60,7 +60,6 @@ Copy or symlink the resulting folder into `datasets_hippie/<name>/` (matching th
 | **IBL (ONE API)** | IBL Brain Wide Map | `ibl_one_to_csv_converter.ipynb` — set `EID` (insertion ID) and run. Downloads `spikes` / `clusters` / `channels` from the public Open Alyx mirror, optionally filters to IBL `good` units, and writes the canonical 5-CSV bundle. |
 | **PhysMAP repository** | Juxtacellular S1, Lakunina A1, CellExplorer | The PhysMAP GitHub repo distributes these as pre-curated `.mat` / `.npz` files. Load them with `scipy.io.loadmat` / `numpy.load`, then construct the CSVs directly (no `Neurocurator` ACQM/NWB path needed — see notes per dataset below). |
 | **C4 database** | Hausser, Hull, Lisberger | Download `.h5` files from [c4-database.com](https://www.c4-database.com); parse with custom scripts (see paper Methods §Per-unit feature extraction). Resulting per-unit mean waveforms + spike trains drop straight into the CSV layout. |
-| **ACQM zip (Braingeneers)** | Braingeneers Mouse Organoid | `acqm_to_csv_converter.ipynb` — set `ACQM_ZIP_PATH`, run all cells. |
 
 ## Per-dataset reproduction recipes
 
@@ -118,12 +117,6 @@ dandi download https://dandiarchive.org/dandiset/000041   # or 000473, 000955
 - **N:** 62,993 neurons from 139 subjects and 698 probe insertions across 10 Cosmos-level brain regions
 - **Quality filter:** IBL quality label `good` (ISI violations < 0.5, presence ratio ≥ 0.5, minimum 100 spikes) — `GOOD_ONLY = True` in the notebook (default).
 - **Workflow:** open `ibl_one_to_csv_converter.ipynb`, set `EID` to the Brain Wide Map insertion you want, and run all cells. The notebook connects to the public Open Alyx mirror (`https://openalyx.internationalbrainlab.org`) anonymously. To iterate over the full BWM corpus, set `EID = None` first to list insertions, then loop the notebook (or extract its body into a Python script) over the returned list. See the [IBL ONE docs](https://int-brain-lab.github.io/iblenv/) for advanced query patterns.
-
-### Braingeneers Mouse Organoid (ACQM, MaxOne HD-MEA)
-
-- **Output dir:** `mouse_organoids_cell_line`
-- **Source:** Braingeneers protosequences resource (`van2023protosequences`), three PSC lines (BRUCE4, KH2, ES-E14TG2a), 23–82 days in culture, MaxWell Biosystems MaxOne HD-MEAs
-- **Workflow:** `acqm_to_csv_converter.ipynb`. Drop the ACQM `.zip` into `./data_acqm/` (gitignored), set `ACQM_ZIP_PATH`, run all cells.
 
 ## Notes
 
