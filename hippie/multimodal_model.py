@@ -31,6 +31,12 @@ class CVAEConfig:
     # β=1.0 locked after hyperparameter sweep on Hausser dataset (42 configs swept).
     # β=0.9 was the pre-sweep default; 1.0 was frozen before evaluating any other dataset.
     beta: float = 1.0
+    # Free bits (Kingma et al. 2016, IAF §2.3): floor, in nats, on each latent
+    # dimension's batch-averaged KL. Dimensions already above the floor are
+    # regularized normally; dimensions below it stop paying a KL penalty, which
+    # removes the gradient pressure that collapses them onto the prior.
+    # 0.0 disables it — every preset below keeps the paper's exact objective.
+    free_bits: float = 0.0
     fusion_layers: Optional[List[int]] = None
     class_hidden_dim: int = 5
 
@@ -725,6 +731,7 @@ class MultiModalCVAETrainModule(pl.LightningModule):
             self.modality_weights = modality_weights
 
         self.beta = config.beta
+        self.free_bits = config.free_bits
         self.reconstruction_consistency_weight = config.reconstruction_consistency_weight
         self.embedding_warmup_epochs = config.embedding_warmup_epochs
         self.use_contrastive_loss = (
@@ -874,6 +881,38 @@ class MultiModalCVAETrainModule(pl.LightningModule):
             return self.current_epoch / self.embedding_warmup_epochs
         return 1.0
 
+    def _compute_kl(self, zmean, zlogvar):
+        """KL to the standard normal prior, with optional free bits.
+
+        Returns (kl_penalty, kl_per_sample, active_dims):
+          kl_penalty    scalar actually added to the loss (free-bits floored)
+          kl_per_sample (B,) true unfloored KL — logged so runs stay comparable
+                        across free_bits settings
+          active_dims   how many latent dims carry >0.01 nats; the number to
+                        watch when tuning free_bits
+
+        With free_bits=0 the penalty is exactly kl_per_sample.mean(), i.e. the
+        original objective, bit for bit.
+        """
+        # Clamp zlogvar before exp to prevent float32 overflow (exp > 88 → inf → nan KL).
+        kl_per_dim = -0.5 * (
+            1 + zlogvar - zmean.pow(2) - torch.exp(zlogvar.clamp(-30, 20))
+        )  # (B, z_dim)
+        kl_per_sample = kl_per_dim.sum(dim=1)  # (B,)
+
+        # Average over the batch *within* each dimension before applying the
+        # floor — this is the original formulation. Flooring per sample instead
+        # makes the gradient far noisier.
+        kl_per_dim_mean = kl_per_dim.mean(dim=0)  # (z_dim,)
+        active_dims = (kl_per_dim_mean > 0.01).sum()
+
+        if self.free_bits > 0:
+            kl_penalty = torch.clamp(kl_per_dim_mean, min=self.free_bits).sum()
+        else:
+            kl_penalty = kl_per_sample.mean()
+
+        return kl_penalty, kl_per_sample, active_dims
+
     def training_step(self, batch, batch_idx):
         data_dict, labels = self.process_batch(batch)
 
@@ -881,10 +920,9 @@ class MultiModalCVAETrainModule(pl.LightningModule):
         enc, zmean, zlogvar, decoded_dict = self._forward_model(data_dict, labels, apply_dropout=True)
 
         mse_loss, mse_losses = self._compute_losses(data_dict, decoded_dict)
-        # Clamp zlogvar before exp to prevent float32 overflow (exp > 88 → inf → nan KL).
-        kl_loss = -0.5 * torch.sum(1 + zlogvar - zmean.pow(2) - torch.exp(zlogvar.clamp(-30, 20)), axis=1)
+        kl_penalty, kl_loss, active_dims = self._compute_kl(zmean, zlogvar)
 
-        total_loss = mse_loss + self.beta * kl_loss.mean()
+        total_loss = mse_loss + self.beta * kl_penalty
         contrastive_loss = self._supervised_contrastive_loss(
             zmean, self._extract_class_labels(labels)
         )
@@ -939,6 +977,8 @@ class MultiModalCVAETrainModule(pl.LightningModule):
         for mod_name, mod_loss in mse_losses.items():
             self.log(f"train_mse_loss_{mod_name}", mod_loss)
         self.log("train_kl_loss", kl_loss.mean())
+        self.log("train_kl_penalty", kl_penalty)
+        self.log("train_active_dims", active_dims.float())
         self.log("train_contrastive_loss", contrastive_loss)
         self.log("train_contrastive_weighted", self.contrastive_weight * contrastive_loss)
         self.train_loss.append(total_loss.item())
@@ -956,10 +996,9 @@ class MultiModalCVAETrainModule(pl.LightningModule):
         enc, zmean, zlogvar, decoded_dict = self._forward_model(data_dict, labels)
         
         mse_loss, mse_losses = self._compute_losses(data_dict, decoded_dict)
-        # Clamp zlogvar before exp to prevent float32 overflow (exp > 88 → inf → nan KL).
-        kl_loss = -0.5 * torch.sum(1 + zlogvar - zmean.pow(2) - torch.exp(zlogvar.clamp(-30, 20)), axis=1)
-        
-        loss = mse_loss + self.beta * kl_loss.mean()
+        kl_penalty, kl_loss, active_dims = self._compute_kl(zmean, zlogvar)
+
+        loss = mse_loss + self.beta * kl_penalty
         contrastive_loss = self._supervised_contrastive_loss(
             zmean, self._extract_class_labels(labels)
         )
@@ -971,6 +1010,8 @@ class MultiModalCVAETrainModule(pl.LightningModule):
         for mod_name, mod_loss in mse_losses.items():
             self.log(f"val_mse_loss_{mod_name}", mod_loss)
         self.log("val_kl_loss", kl_loss.mean())
+        self.log("val_kl_penalty", kl_penalty)
+        self.log("val_active_dims", active_dims.float())
         self.log("val_contrastive_loss", contrastive_loss)
         self.log("val_contrastive_weighted", self.contrastive_weight * contrastive_loss)
         self._val_component_buffer.append({

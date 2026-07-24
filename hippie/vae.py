@@ -150,6 +150,7 @@ def train_vae(
     weight_decay: float = 1e-2,
     val_fraction: float = 0.1,
     backbone_base_width: int = 64,
+    free_bits: float = 0.5,
     device: str = "cpu",
     random_state: int = 42,
 ) -> VAECompressor:
@@ -157,7 +158,8 @@ def train_vae(
 
     The model uses the same ResNet18 + fusion encoder as the pretrained HIPPIE
     checkpoint but with no class or technology conditioning.  Loss is the
-    standard beta-VAE ELBO: MSE reconstruction + KL divergence (beta=1).
+    standard beta-VAE ELBO: MSE reconstruction + KL divergence (beta=1),
+    with a free-bits floor on the KL (see `free_bits`).
 
     Inputs must be preprocessed the same way as the pretrained checkpoint (see
     examples/extract_embeddings.py): wave: min-max [-1,1]; isi: log1p then
@@ -175,6 +177,10 @@ def train_vae(
         weight_decay: AdamW weight decay.
         val_fraction: Fraction of data held out for validation.
         backbone_base_width: ResNet18 base channel width (default 64).
+        free_bits: Floor in nats on each latent dim's KL (default 0.5). Keeps
+            dimensions from collapsing onto the prior, so the embedding you
+            hand to UMAP/HDBSCAN spans more than a handful of axes. Pass 0.0
+            for the plain beta=1 ELBO.
         device: "cuda" or "cpu".
         random_state: Random seed for train/val split.
 
@@ -228,6 +234,7 @@ def train_vae(
     # Model
     # ------------------------------------------------------------------
     config = ExperimentConfigs.unconditioned()
+    config.free_bits = free_bits
 
     base_model = MultiModalCVAE(
         modalities={"wave": 50, "isi": 100, "acg": 100},

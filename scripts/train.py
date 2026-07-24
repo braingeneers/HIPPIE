@@ -109,6 +109,10 @@ def main() -> None:
                    help="ExperimentConfigs preset (default: production config)")
     p.add_argument("--z-dim", dest="z_dim", type=int, default=30)
     p.add_argument("--beta", type=float, default=1.0)
+    p.add_argument("--free-bits", dest="free_bits", type=float, default=0.5,
+                   help="Floor in nats on each latent dim's KL, preventing dims from "
+                        "collapsing onto the prior (default: 0.5). Pass 0 to disable "
+                        "and reproduce the published objective exactly.")
     p.add_argument("--epochs", type=int, default=100)
     p.add_argument("--batch-size", dest="batch_size", type=int, default=128)
     p.add_argument("--learning-rate", dest="learning_rate", type=float, default=1e-3)
@@ -177,6 +181,7 @@ def main() -> None:
 
     config: CVAEConfig = getattr(ExperimentConfigs, args.config)()
     config.beta = args.beta
+    config.free_bits = args.free_bits
 
     # Wrap with the augmentation dataset when the config requests it.
     # Without this wrap, configs that set use_augmentations=True (notably the
