@@ -335,6 +335,41 @@ Lowering β (1.0 → 0.1) gives the decoder more reconstruction capacity at
 the cost of latent regularization; `z_dim=16` is the value used in the
 paper for the generative figures.
 
+### Free bits
+
+`--free-bits λ` (default **0.5** nats) puts a floor under each latent
+dimension's KL. Dimensions already carrying more than λ nats are
+regularized normally; dimensions below it stop paying a KL penalty, which
+removes the gradient pressure that otherwise collapses them onto the
+prior. At `z_dim=30` a plain β=1.0 ELBO commonly leaves most dimensions
+dead, and since the embedding *is* the analysis product — it feeds UMAP,
+HDBSCAN, and the kNN classifier — every dead dimension is embedding
+capacity you trained for and don't have.
+
+Watch `train_active_dims` / `val_active_dims` in the logs: the count of
+dimensions carrying >0.01 nats. That is the number to tune against.
+
+```bash
+# default — free bits on at 0.5
+python scripts/train.py --dataset my_data --output checkpoints/run.ckpt
+
+# disable, reproducing the published objective exactly
+python scripts/train.py --dataset my_data --output checkpoints/run.ckpt --free-bits 0
+```
+
+Free bits raises `train_loss` by construction (you are declining to
+collect a penalty discount), so judge it on downstream accuracy and
+`active_dims`, not on the loss curve. Prefer it over lowering β when the
+goal is a richer embedding: λ raises the floor without lowering the
+ceiling, so the prior match needed for sampling and counterfactual
+decoding stays intact.
+
+**Reproducing the paper:** the published numbers predate this flag. Pass
+`--free-bits 0` to match them. Every `ExperimentConfigs` preset still
+defaults to `free_bits=0.0`, so loading a released checkpoint or building
+a config in Python is unaffected — only `scripts/train.py` and
+`train_vae()` default to 0.5.
+
 ## Data Augmentation
 
 HIPPIE includes two augmentation strategies.
